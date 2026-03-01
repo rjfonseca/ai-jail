@@ -75,7 +75,7 @@ pub fn load() -> Config {
 
 pub fn save(config: &Config) {
     let path = config_path();
-    let header = "# ai-jail sandbox configuration\n# Edit freely. Regenerate with: ai-jail --clean --init\n\n";
+    let header = "# ai-jail sandbox configuration\n# https://github.com/akitaonrails/ai-jail\n# Edit freely. Regenerate with: ai-jail --clean --init\n\n";
     if let Err(e) = ensure_regular_target_or_absent(&path) {
         output::warn(&format!("Refusing to write {CONFIG_FILE}: {e}"));
         return;
