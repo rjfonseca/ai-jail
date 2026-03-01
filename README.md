@@ -24,7 +24,17 @@ mise use -g ubi:akitaonrails/ai-jail
 
 ### GitHub Releases
 
-Download prebuilt binaries from the [Releases](https://github.com/akitaonrails/ai-jail/releases) page.
+Download prebuilt binaries from the [Releases](https://github.com/akitaonrails/ai-jail/releases) page:
+
+```bash
+# Linux x86_64
+curl -fsSL https://github.com/akitaonrails/ai-jail/releases/latest/download/ai-jail-linux-x86_64.tar.gz | tar xz
+sudo mv ai-jail /usr/local/bin/
+
+# macOS ARM (Apple Silicon)
+curl -fsSL https://github.com/akitaonrails/ai-jail/releases/latest/download/ai-jail-macos-aarch64.tar.gz | tar xz
+sudo mv ai-jail /usr/local/bin/
+```
 
 ### From source
 
