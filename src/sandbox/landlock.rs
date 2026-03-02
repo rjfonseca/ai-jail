@@ -161,6 +161,15 @@ fn collect_normal_paths(
         output::verbose(&format!("Landlock: {} rw", project_dir.display()));
     }
 
+    // $HOME: read-write.  Inside the sandbox $HOME is a tmpfs,
+    // so this allows tools (mise, gem, etc.) to create dirs.
+    // bwrap ro-bind mounts for individual dotdirs still prevent
+    // writes to those — filesystem permissions override Landlock.
+    rw.push(home.clone());
+    if verbose {
+        output::verbose("Landlock: $HOME rw");
+    }
+
     // Home dotdirs
     collect_home_paths(&home, &mut ro, &mut rw, verbose);
 
