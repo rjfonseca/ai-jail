@@ -135,8 +135,9 @@ fn generate_sbpl_profile(
     profile.push_str("(allow ipc-posix-shm-read-metadata)\n");
     profile.push_str("(allow ipc-posix-shm-write-create)\n\n");
 
-    profile.push_str("; Pseudo-terminal\n");
-    profile.push_str("(allow pseudo-tty)\n\n");
+    profile.push_str("; Pseudo-terminal and ioctl (needed for tty raw mode)\n");
+    profile.push_str("(allow pseudo-tty)\n");
+    profile.push_str("(allow file-ioctl)\n\n");
 
     if !lockdown {
         profile.push_str("; Network\n");

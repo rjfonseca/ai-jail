@@ -19,7 +19,7 @@ cargo install ai-jail
 ### mise
 
 ```bash
-mise use -g ubi:akitaonrails/ai-jail
+mise use -g github:akitaonrails/ai-jail
 ```
 
 ### Nix (flake)
