@@ -76,6 +76,12 @@ fn collect_lockdown_paths(
     let mut ro = Vec::new();
     let mut rw = Vec::new();
 
+    // Root filesystem: read-only (bwrap needs "/" to set up mount
+    // namespaces via `mount --make-rslave /`).  This covers all
+    // subdirectories, so individual system paths below are technically
+    // redundant but kept for documentation.
+    ro.push(PathBuf::from("/"));
+
     // System paths: read-only
     for p in &[
         "/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc", "/opt", "/sys",
@@ -116,6 +122,12 @@ fn collect_normal_paths(
     let home = super::home_dir();
     let mut ro = Vec::new();
     let mut rw = Vec::new();
+
+    // Root filesystem: read-only (bwrap needs "/" to set up mount
+    // namespaces via `mount --make-rslave /`).  This covers all
+    // subdirectories, so individual system paths below are technically
+    // redundant but kept for documentation.
+    ro.push(PathBuf::from("/"));
 
     // System paths: read-only
     for p in &[
@@ -341,6 +353,29 @@ mod tests {
         let project = PathBuf::from("/tmp/test-proj");
         let (_, rw) = collect_normal_paths(&config, &project, false);
         assert!(rw.contains(&project), "project must be in rw list");
+    }
+
+    #[test]
+    fn normal_paths_root_is_readable() {
+        let config = Config {
+            no_gpu: Some(true),
+            no_docker: Some(true),
+            ..Config::default()
+        };
+        let (ro, _) = collect_normal_paths(&config, Path::new("/tmp"), false);
+        assert!(
+            ro.contains(&PathBuf::from("/")),
+            "/ must be in ro list so bwrap can set up mount namespaces"
+        );
+    }
+
+    #[test]
+    fn lockdown_paths_root_is_readable() {
+        let (ro, _) = collect_lockdown_paths(Path::new("/tmp/proj"), false);
+        assert!(
+            ro.contains(&PathBuf::from("/")),
+            "/ must be in ro list so bwrap can set up mount namespaces"
+        );
     }
 
     #[test]
