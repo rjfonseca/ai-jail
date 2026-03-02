@@ -79,7 +79,7 @@ fn collect_lockdown_paths(
     // System paths: read-only
     for p in &[
         "/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc", "/opt", "/sys",
-        "/proc", "/run", "/dev",
+        "/run", "/dev",
     ] {
         ro.push(PathBuf::from(p));
     }
@@ -87,7 +87,10 @@ fn collect_lockdown_paths(
         output::verbose("Landlock lockdown: system ro");
     }
 
-    // /tmp: read-write (only writable location)
+    // /proc: read-write (bwrap writes /proc/self/uid_map)
+    rw.push(PathBuf::from("/proc"));
+
+    // /tmp: read-write (only writable user location)
     rw.push(PathBuf::from("/tmp"));
     if verbose {
         output::verbose("Landlock lockdown: /tmp rw");
@@ -117,7 +120,7 @@ fn collect_normal_paths(
     // System paths: read-only
     for p in &[
         "/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc", "/opt", "/sys",
-        "/proc", "/run",
+        "/run",
     ] {
         ro.push(PathBuf::from(p));
     }
@@ -126,10 +129,12 @@ fn collect_normal_paths(
     }
 
     // Writable system paths
+    // /proc must be rw: bwrap writes /proc/self/uid_map for namespace setup
+    rw.push(PathBuf::from("/proc"));
     rw.push(PathBuf::from("/tmp"));
     rw.push(PathBuf::from("/dev"));
     if verbose {
-        output::verbose("Landlock: /tmp, /dev rw");
+        output::verbose("Landlock: /proc, /tmp, /dev rw");
     }
 
     // /dev/shm

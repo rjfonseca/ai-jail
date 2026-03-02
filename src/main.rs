@@ -57,9 +57,6 @@ fn run() -> Result<i32, String> {
         config::save(&config);
     }
 
-    // Apply Landlock LSM restrictions (Linux 5.13+, best-effort)
-    sandbox::apply_landlock(&config, &project_dir, cli.verbose);
-
     // Handle dry run
     if cli.dry_run {
         let formatted =
@@ -73,8 +70,13 @@ fn run() -> Result<i32, String> {
     // Install signal handlers before spawning
     signals::install_handlers();
 
-    // Spawn sandbox
+    // Build bwrap command (reads $HOME, /dev, etc. for mount discovery)
     let mut cmd = sandbox::build(&guard, &config, &project_dir, cli.verbose);
+
+    // Apply Landlock LSM restrictions (Linux 5.13+, best-effort).
+    // Must be after build() so mount discovery can read directories,
+    // but before spawn() so bwrap inherits the restrictions.
+    sandbox::apply_landlock(&config, &project_dir, cli.verbose);
 
     let child = cmd
         .spawn()
