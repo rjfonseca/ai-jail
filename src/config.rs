@@ -174,6 +174,14 @@ pub fn save_global(config: &Config) {
     if config.status_bar_style.is_some() {
         global.status_bar_style = config.status_bar_style.clone();
     }
+    // Persist the effective default theme on first status-bar enable so
+    // future runs keep the same style without extra flags.
+    if config.no_status_bar == Some(false)
+        && config.status_bar_style.is_none()
+        && global.status_bar_style.is_none()
+    {
+        global.status_bar_style = Some(config.status_bar_style().to_string());
+    }
     save_to_path(&path, &global);
 }
 
@@ -369,6 +377,8 @@ mod tests {
     // Tests that call set_current_dir must hold this lock to avoid
     // racing each other (cwd is process-global).
     static CWD_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    // Tests that mutate env vars must hold this lock.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn serialize_config(config: &Config) -> Result<String, String> {
         toml::to_string_pretty(config).map_err(|e| e.to_string())
@@ -934,6 +944,81 @@ no_landlock = false
     }
 
     // ── File I/O tests (using temp dirs) ───────────────────────
+
+    #[test]
+    fn save_global_enabling_status_bar_persists_default_dark_style() {
+        let _env = ENV_LOCK.lock().unwrap();
+        let home = std::env::temp_dir()
+            .join(format!("ai-jail-home-global-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&home);
+        unsafe { std::env::set_var("HOME", &home) };
+
+        let cfg = Config {
+            no_status_bar: Some(false),
+            status_bar_style: None,
+            ..Config::default()
+        };
+        save_global(&cfg);
+
+        let global = load_global();
+        assert_eq!(global.no_status_bar, Some(false));
+        assert_eq!(global.status_bar_style.as_deref(), Some("dark"));
+
+        unsafe { std::env::remove_var("HOME") };
+        let _ = std::fs::remove_file(home.join(".ai-jail"));
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn save_global_preserves_existing_theme_if_reenabling_without_style() {
+        let _env = ENV_LOCK.lock().unwrap();
+        let home = std::env::temp_dir().join(format!(
+            "ai-jail-home-global-preserve-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::create_dir_all(&home);
+        unsafe { std::env::set_var("HOME", &home) };
+
+        let path = home.join(".ai-jail");
+        let existing = Config {
+            no_status_bar: Some(true),
+            status_bar_style: Some("light".into()),
+            ..Config::default()
+        };
+        save_to_path(&path, &existing);
+
+        let cfg = Config {
+            no_status_bar: Some(false),
+            status_bar_style: None,
+            ..Config::default()
+        };
+        save_global(&cfg);
+
+        let global = load_global();
+        assert_eq!(global.no_status_bar, Some(false));
+        assert_eq!(global.status_bar_style.as_deref(), Some("light"));
+
+        unsafe { std::env::remove_var("HOME") };
+        let _ = std::fs::remove_file(home.join(".ai-jail"));
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn merge_with_global_keeps_status_bar_preferences_from_global() {
+        let global = Config {
+            no_status_bar: Some(false),
+            status_bar_style: Some("light".into()),
+            ..Config::default()
+        };
+        let local = Config {
+            no_status_bar: Some(true),
+            status_bar_style: Some("dark".into()),
+            ..Config::default()
+        };
+        let merged = merge_with_global(global, local);
+        assert_eq!(merged.no_status_bar, Some(false));
+        assert_eq!(merged.status_bar_style.as_deref(), Some("light"));
+    }
 
     #[test]
     fn save_and_load_roundtrip() {
