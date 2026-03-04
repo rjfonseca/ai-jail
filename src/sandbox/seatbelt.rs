@@ -169,22 +169,56 @@ fn generate_sbpl_profile(
         profile.push_str("(allow system-socket)\n\n");
     }
 
-    profile.push_str("; File reads: allow globally, deny sensitive paths\n");
-    profile.push_str("(allow file-read*)\n");
-
-    for deny_path in &deny_paths {
-        let escaped = sbpl_path(deny_path);
-        if canonicalize_or_keep(deny_path).is_dir() {
-            profile.push_str(&format!(
-                "(deny file-read* (subpath \"{escaped}\"))\n"
-            ));
-        } else {
-            profile.push_str(&format!(
-                "(deny file-read* (literal \"{escaped}\"))\n"
-            ));
+    if lockdown {
+        profile.push_str("; File reads: lockdown allow-list\n");
+        for rd_path in macos_lockdown_read_paths(project_dir) {
+            let canonical = canonicalize_or_keep(&rd_path);
+            let escaped = sbpl_escape(canonical.to_string_lossy().as_ref());
+            if canonical.is_dir() || !canonical.exists() {
+                profile.push_str(&format!(
+                    "(allow file-read* (subpath \"{escaped}\"))\n"
+                ));
+            } else {
+                profile.push_str(&format!(
+                    "(allow file-read* (literal \"{escaped}\"))\n"
+                ));
+            }
         }
+        profile.push('\n');
+
+        profile.push_str("; Deny sensitive home paths explicitly\n");
+        for deny_path in &deny_paths {
+            let escaped = sbpl_path(deny_path);
+            if canonicalize_or_keep(deny_path).is_dir() {
+                profile.push_str(&format!(
+                    "(deny file-read* (subpath \"{escaped}\"))\n"
+                ));
+            } else {
+                profile.push_str(&format!(
+                    "(deny file-read* (literal \"{escaped}\"))\n"
+                ));
+            }
+        }
+        profile.push('\n');
+    } else {
+        profile
+            .push_str("; File reads: allow globally, deny sensitive paths\n");
+        profile.push_str("(allow file-read*)\n");
+
+        for deny_path in &deny_paths {
+            let escaped = sbpl_path(deny_path);
+            if canonicalize_or_keep(deny_path).is_dir() {
+                profile.push_str(&format!(
+                    "(deny file-read* (subpath \"{escaped}\"))\n"
+                ));
+            } else {
+                profile.push_str(&format!(
+                    "(deny file-read* (literal \"{escaped}\"))\n"
+                ));
+            }
+        }
+        profile.push('\n');
     }
-    profile.push('\n');
 
     if lockdown {
         profile.push_str("; Lockdown: no host file-write allowances\n\n");
@@ -331,6 +365,51 @@ fn macos_docker_socket() -> Option<PathBuf> {
     candidates.into_iter().find(|p| super::path_exists(p))
 }
 
+fn macos_lockdown_read_paths(project_dir: &Path) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    let mut push_unique = |p: PathBuf| {
+        if !paths.contains(&p) {
+            paths.push(p);
+        }
+    };
+
+    // Always allow reading the project tree.
+    push_unique(canonicalize_or_keep(project_dir));
+
+    // Core runtime and toolchain locations needed to execute binaries
+    // and resolve dynamic libraries on macOS.
+    for p in [
+        "/System",
+        "/usr",
+        "/bin",
+        "/sbin",
+        "/etc",
+        "/private/etc",
+        "/Library",
+        "/Applications",
+        "/dev",
+        "/tmp",
+        "/private/tmp",
+        "/private/var/tmp",
+        "/private/var/folders",
+        "/private/var/db",
+    ] {
+        let pb = PathBuf::from(p);
+        if super::path_exists(&pb) {
+            push_unique(pb);
+        }
+    }
+
+    if let Ok(tmpdir) = std::env::var("TMPDIR") {
+        let p = PathBuf::from(tmpdir);
+        if super::path_exists(&p) {
+            push_unique(canonicalize_or_keep(&p));
+        }
+    }
+
+    paths
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -354,6 +433,7 @@ mod tests {
         let profile = generate_sbpl_profile(&config, &project, false, false);
         assert!(profile.contains("(allow network-outbound)"));
         assert!(profile.contains("(allow network-inbound)"));
+        assert!(profile.contains("(allow file-read*)"));
     }
 
     #[test]
@@ -363,6 +443,9 @@ mod tests {
         let project = PathBuf::from("/tmp/test-project");
         let profile = generate_sbpl_profile(&config, &project, false, true);
         assert!(!profile.contains("(allow network-outbound)"));
+        assert!(!profile.contains("(allow file-read*)\n"));
+        assert!(profile
+            .contains("(allow file-read* (subpath \"/tmp/test-project\"))"));
         // Lockdown should have no path-based write allowances (project, dotfiles, tmp)
         // but still allows device writes (/dev/null etc.) and PTY writes
         assert!(profile.contains("no host file-write allowances"));
@@ -403,5 +486,12 @@ mod tests {
         let project = PathBuf::from("/tmp/test-project");
         let paths = macos_writable_paths(&project, &config, true);
         assert!(paths.is_empty());
+    }
+
+    #[test]
+    fn lockdown_read_paths_include_project() {
+        let project = PathBuf::from("/tmp/test-project");
+        let paths = macos_lockdown_read_paths(&project);
+        assert!(paths.contains(&project));
     }
 }
