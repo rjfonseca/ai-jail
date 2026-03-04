@@ -253,47 +253,174 @@ fn contains_scroll_reset(data: &[u8]) -> bool {
     !matches!(detector.scan(data), ResetEvent::None)
 }
 
-/// Tracks whether the child output stream is mid-escape-sequence.
-/// We must not inject our status bar redraw while the terminal is
-/// processing a partial CSI/OSC — doing so garbles the output.
 #[derive(Clone, Copy)]
-enum SeqState {
+enum ControlState {
     Normal,
-    Esc, // saw \x1b
-    Csi, // saw \x1b[, accumulating params
-    Osc, // saw \x1b], until BEL or ST
+    Esc,
+    Csi,
+    Osc,
+    OscEsc,
+    Dcs,
+    DcsEsc,
+    Apc,
+    ApcEsc,
+    Pm,
+    PmEsc,
+    Sos,
+    SosEsc,
 }
 
-impl SeqState {
+/// Tracks whether it is safe to inject status-bar control bytes:
+/// only when we're at a control-sequence boundary and not mid UTF-8.
+struct StreamState {
+    ctl: ControlState,
+    utf8_cont: u8,
+}
+
+impl StreamState {
+    fn new() -> Self {
+        Self {
+            ctl: ControlState::Normal,
+            utf8_cont: 0,
+        }
+    }
+
+    fn can_inject(&self) -> bool {
+        matches!(self.ctl, ControlState::Normal) && self.utf8_cont == 0
+    }
+
+    fn update_utf8(&mut self, b: u8) {
+        if self.utf8_cont > 0 {
+            if (0x80..=0xbf).contains(&b) {
+                self.utf8_cont -= 1;
+                return;
+            }
+            self.utf8_cont = 0;
+        }
+        self.utf8_cont = match b {
+            0xc2..=0xdf => 1,
+            0xe0..=0xef => 2,
+            0xf0..=0xf4 => 3,
+            _ => 0,
+        };
+    }
+
     fn update(&mut self, data: &[u8]) {
         for &b in data {
-            *self = match *self {
-                SeqState::Normal => {
+            self.ctl = match self.ctl {
+                ControlState::Normal => {
                     if b == 0x1b {
-                        SeqState::Esc
+                        ControlState::Esc
                     } else {
-                        SeqState::Normal
+                        self.update_utf8(b);
+                        ControlState::Normal
                     }
                 }
-                SeqState::Esc => match b {
-                    b'[' => SeqState::Csi,
-                    b']' => SeqState::Osc,
-                    0x20..=0x2f => SeqState::Esc,
-                    _ => SeqState::Normal,
+                ControlState::Esc => match b {
+                    b'[' => ControlState::Csi,
+                    b']' => ControlState::Osc,
+                    b'P' => ControlState::Dcs,
+                    b'_' => ControlState::Apc,
+                    b'^' => ControlState::Pm,
+                    b'X' => ControlState::Sos,
+                    0x20..=0x2f => ControlState::Esc,
+                    0x1b => ControlState::Esc,
+                    _ => ControlState::Normal,
                 },
-                SeqState::Csi => match b {
-                    0x20..=0x3f => SeqState::Csi,
-                    0x1b => SeqState::Esc,
-                    _ => SeqState::Normal,
+                ControlState::Csi => match b {
+                    0x20..=0x3f => ControlState::Csi,
+                    0x1b => ControlState::Esc,
+                    _ => ControlState::Normal,
                 },
-                SeqState::Osc => match b {
-                    0x07 => SeqState::Normal,
-                    0x1b => SeqState::Esc,
-                    _ => SeqState::Osc,
+                // OSC: BEL or ST (ESC \)
+                ControlState::Osc => match b {
+                    0x07 => ControlState::Normal,
+                    0x1b => ControlState::OscEsc,
+                    _ => ControlState::Osc,
                 },
+                ControlState::OscEsc => {
+                    if b == b'\\' {
+                        ControlState::Normal
+                    } else {
+                        ControlState::Osc
+                    }
+                }
+                // DCS/APC/PM/SOS: ST (ESC \)
+                ControlState::Dcs => {
+                    if b == 0x1b {
+                        ControlState::DcsEsc
+                    } else {
+                        ControlState::Dcs
+                    }
+                }
+                ControlState::DcsEsc => {
+                    if b == b'\\' {
+                        ControlState::Normal
+                    } else {
+                        ControlState::Dcs
+                    }
+                }
+                ControlState::Apc => {
+                    if b == 0x1b {
+                        ControlState::ApcEsc
+                    } else {
+                        ControlState::Apc
+                    }
+                }
+                ControlState::ApcEsc => {
+                    if b == b'\\' {
+                        ControlState::Normal
+                    } else {
+                        ControlState::Apc
+                    }
+                }
+                ControlState::Pm => {
+                    if b == 0x1b {
+                        ControlState::PmEsc
+                    } else {
+                        ControlState::Pm
+                    }
+                }
+                ControlState::PmEsc => {
+                    if b == b'\\' {
+                        ControlState::Normal
+                    } else {
+                        ControlState::Pm
+                    }
+                }
+                ControlState::Sos => {
+                    if b == 0x1b {
+                        ControlState::SosEsc
+                    } else {
+                        ControlState::Sos
+                    }
+                }
+                ControlState::SosEsc => {
+                    if b == b'\\' {
+                        ControlState::Normal
+                    } else {
+                        ControlState::Sos
+                    }
+                }
             };
         }
     }
+}
+
+fn flush_statusbar_if_safe(
+    stream: &StreamState,
+    pending_redraw: &mut bool,
+    pending_clamp: &mut bool,
+) {
+    if !*pending_redraw || !stream.can_inject() {
+        return;
+    }
+    crate::statusbar::redraw();
+    if *pending_clamp {
+        crate::statusbar::clamp_cursor();
+        *pending_clamp = false;
+    }
+    *pending_redraw = false;
 }
 
 fn io_loop(master: &OwnedFd) {
@@ -302,8 +429,9 @@ fn io_loop(master: &OwnedFd) {
     let stdin_bfd = unsafe { BorrowedFd::borrow_raw(stdin_fd) };
     let master_bfd = unsafe { BorrowedFd::borrow_raw(master_raw) };
     let mut buf = [0u8; 8192];
-    let mut seq = SeqState::Normal;
+    let mut stream = StreamState::new();
     let mut reset = ResetDetector::new();
+    let mut pending_redraw = false;
     let mut pending_clamp = false;
 
     loop {
@@ -312,17 +440,22 @@ fn io_loop(master: &OwnedFd) {
             PollFd::new(master_bfd, PollFlags::POLLIN),
         ];
 
+        let (req_redraw, req_clamp) = crate::statusbar::take_requests();
+        if req_redraw {
+            pending_redraw = true;
+        }
+        if req_clamp {
+            pending_clamp = true;
+            pending_redraw = true;
+        }
+
         match poll(&mut fds, PollTimeout::from(100_u16)) {
             Ok(0) => {
-                if matches!(seq, SeqState::Normal)
-                    && crate::statusbar::take_dirty()
-                {
-                    crate::statusbar::redraw();
-                    if pending_clamp {
-                        crate::statusbar::clamp_cursor();
-                        pending_clamp = false;
-                    }
-                }
+                flush_statusbar_if_safe(
+                    &stream,
+                    &mut pending_redraw,
+                    &mut pending_clamp,
+                );
                 continue;
             }
             Err(nix::errno::Errno::EINTR) => continue,
@@ -338,17 +471,14 @@ fn io_loop(master: &OwnedFd) {
                     Ok(n) => {
                         write_all_raw(nix::libc::STDOUT_FILENO, &buf[..n]);
                         let ev = reset.scan(&buf[..n]);
+                        if !matches!(ev, ResetEvent::None) {
+                            pending_redraw = true;
+                        }
                         if matches!(ev, ResetEvent::RedrawAndClamp) {
                             pending_clamp = true;
+                            pending_redraw = true;
                         }
-                        seq.update(&buf[..n]);
-                        if matches!(seq, SeqState::Normal) {
-                            crate::statusbar::redraw();
-                            if pending_clamp {
-                                crate::statusbar::clamp_cursor();
-                                pending_clamp = false;
-                            }
-                        }
+                        stream.update(&buf[..n]);
                     }
                     Err(nix::errno::Errno::EINTR) => {}
                     Err(nix::errno::Errno::EIO) => break,
@@ -364,29 +494,35 @@ fn io_loop(master: &OwnedFd) {
                         Ok(n) => {
                             write_all_raw(nix::libc::STDOUT_FILENO, &buf[..n]);
                             let ev = reset.scan(&buf[..n]);
+                            if !matches!(ev, ResetEvent::None) {
+                                pending_redraw = true;
+                            }
                             if matches!(ev, ResetEvent::RedrawAndClamp) {
                                 pending_clamp = true;
+                                pending_redraw = true;
                             }
-                            seq.update(&buf[..n]);
-                            if matches!(seq, SeqState::Normal) {
-                                crate::statusbar::redraw();
-                                if pending_clamp {
-                                    crate::statusbar::clamp_cursor();
-                                    pending_clamp = false;
-                                }
-                            }
+                            stream.update(&buf[..n]);
                         }
                     }
                 }
-                let dirty = crate::statusbar::take_dirty();
-                if pending_clamp || dirty || matches!(seq, SeqState::Normal) {
-                    crate::statusbar::redraw();
-                    if pending_clamp {
-                        crate::statusbar::clamp_cursor();
-                    }
-                }
+                flush_statusbar_if_safe(
+                    &stream,
+                    &mut pending_redraw,
+                    &mut pending_clamp,
+                );
                 break;
             }
+        }
+
+        // If child is currently quiet and we're at a safe stream boundary,
+        // apply any pending redraw now.
+        if !matches!(fds[1].revents(), Some(r) if r.contains(PollFlags::POLLIN))
+        {
+            flush_statusbar_if_safe(
+                &stream,
+                &mut pending_redraw,
+                &mut pending_clamp,
+            );
         }
 
         // Check stdin (user input)
@@ -605,5 +741,34 @@ mod tests {
         let mut detector = ResetDetector::new();
         assert!(matches!(detector.scan(b"\x1b[?1049"), ResetEvent::None));
         assert!(matches!(detector.scan(b"l"), ResetEvent::RedrawAndClamp));
+    }
+
+    #[test]
+    fn stream_state_blocks_mid_utf8() {
+        let mut s = StreamState::new();
+        s.update(&[0xe2]); // start of 3-byte sequence
+        assert!(!s.can_inject());
+        s.update(&[0x94, 0x80]); // finish "─"
+        assert!(s.can_inject());
+    }
+
+    #[test]
+    fn stream_state_blocks_inside_dcs_until_st() {
+        let mut s = StreamState::new();
+        s.update(b"\x1bP");
+        assert!(!s.can_inject());
+        s.update(b"abc");
+        assert!(!s.can_inject());
+        s.update(b"\x1b\\");
+        assert!(s.can_inject());
+    }
+
+    #[test]
+    fn stream_state_blocks_inside_osc_until_bel() {
+        let mut s = StreamState::new();
+        s.update(b"\x1b]0;title");
+        assert!(!s.can_inject());
+        s.update(&[0x07]);
+        assert!(s.can_inject());
     }
 }

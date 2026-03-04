@@ -27,6 +27,10 @@ pub struct Config {
     pub lockdown: Option<bool>,
     #[serde(default)]
     pub no_landlock: Option<bool>,
+    #[serde(default)]
+    pub no_status_bar: Option<bool>,
+    #[serde(default)]
+    pub status_bar_style: Option<String>,
 }
 
 impl Config {
@@ -48,49 +52,148 @@ impl Config {
     pub fn landlock_enabled(&self) -> bool {
         self.no_landlock != Some(true)
     }
+    pub fn status_bar_enabled(&self) -> bool {
+        self.no_status_bar == Some(false)
+    }
+    pub fn status_bar_style(&self) -> &str {
+        match self.status_bar_style.as_deref() {
+            Some("light") => "light",
+            _ => "dark",
+        }
+    }
 }
 
 fn config_path() -> PathBuf {
     Path::new(CONFIG_FILE).to_path_buf()
 }
 
+fn global_config_path() -> Option<PathBuf> {
+    std::env::var("HOME")
+        .ok()
+        .map(|h| PathBuf::from(h).join(CONFIG_FILE))
+}
+
 pub fn parse_toml(contents: &str) -> Result<Config, String> {
     toml::from_str(contents).map_err(|e| e.to_string())
 }
 
-pub fn load() -> Config {
-    let path = config_path();
+fn load_from_path(path: &Path) -> Config {
     if !path.exists() {
         return Config::default();
     }
-    match std::fs::read_to_string(&path) {
+    match std::fs::read_to_string(path) {
         Ok(contents) => match parse_toml(&contents) {
             Ok(cfg) => cfg,
             Err(e) => {
-                output::warn(&format!("Failed to parse {CONFIG_FILE}: {e}"));
+                output::warn(&format!(
+                    "Failed to parse {}: {e}",
+                    path.display()
+                ));
                 Config::default()
             }
         },
         Err(e) => {
-            output::warn(&format!("Failed to read {CONFIG_FILE}: {e}"));
+            output::warn(&format!("Failed to read {}: {e}", path.display()));
             Config::default()
         }
     }
 }
 
+/// Load project-level config from `.ai-jail` in the current dir.
+pub fn load() -> Config {
+    load_from_path(&config_path())
+}
+
+/// Load global user config from `$HOME/.ai-jail`.
+pub fn load_global() -> Config {
+    match global_config_path() {
+        Some(p) => load_from_path(&p),
+        None => Config::default(),
+    }
+}
+
+/// Merge global (user-level) and local (project-level) configs.
+/// Local overrides global for project settings; global provides
+/// user-level defaults (status bar).
+pub fn merge_with_global(global: Config, local: Config) -> Config {
+    let mut c = global;
+    if !local.command.is_empty() {
+        c.command = local.command;
+    }
+    c.rw_maps.extend(local.rw_maps);
+    dedup_paths(&mut c.rw_maps);
+    c.ro_maps.extend(local.ro_maps);
+    dedup_paths(&mut c.ro_maps);
+    if local.no_gpu.is_some() {
+        c.no_gpu = local.no_gpu;
+    }
+    if local.no_docker.is_some() {
+        c.no_docker = local.no_docker;
+    }
+    if local.no_display.is_some() {
+        c.no_display = local.no_display;
+    }
+    if local.no_mise.is_some() {
+        c.no_mise = local.no_mise;
+    }
+    if local.lockdown.is_some() {
+        c.lockdown = local.lockdown;
+    }
+    if local.no_landlock.is_some() {
+        c.no_landlock = local.no_landlock;
+    }
+    // Status bar stays from global — local should not override
+    c
+}
+
+/// Save project-level config to `.ai-jail` in the current dir.
+/// User-level fields (status bar) are excluded — they belong in
+/// the global `$HOME/.ai-jail`.
 pub fn save(config: &Config) {
-    let path = config_path();
-    let header = "# ai-jail sandbox configuration\n# https://github.com/akitaonrails/ai-jail\n# Edit freely. Regenerate with: ai-jail --clean --init\n\n";
-    if let Err(e) = ensure_regular_target_or_absent(&path) {
-        output::warn(&format!("Refusing to write {CONFIG_FILE}: {e}"));
+    let mut local = config.clone();
+    // Strip user-level fields from project config
+    local.no_status_bar = None;
+    local.status_bar_style = None;
+
+    save_to_path(&config_path(), &local);
+}
+
+/// Persist user-level preferences (status bar) to `$HOME/.ai-jail`.
+/// Loads the existing global config first so other fields are kept.
+pub fn save_global(config: &Config) {
+    if config.no_status_bar.is_none() && config.status_bar_style.is_none() {
         return;
     }
+    let Some(path) = global_config_path() else {
+        return;
+    };
+    let mut global = load_from_path(&path);
+    if config.no_status_bar.is_some() {
+        global.no_status_bar = config.no_status_bar;
+    }
+    if config.status_bar_style.is_some() {
+        global.status_bar_style = config.status_bar_style.clone();
+    }
+    save_to_path(&path, &global);
+}
 
+fn save_to_path(path: &Path, config: &Config) {
+    let header = "# ai-jail sandbox configuration\n\
+                  # https://github.com/akitaonrails/ai-jail\n\
+                  # Edit freely. Regenerate with: \
+                  ai-jail --clean --init\n\n";
+    if let Err(e) = ensure_regular_target_or_absent(path) {
+        output::warn(&format!("Refusing to write {}: {e}", path.display()));
+        return;
+    }
     match toml::to_string_pretty(config) {
         Ok(body) => {
             let contents = format!("{header}{body}");
-            if let Err(e) = write_atomic(&path, &contents) {
-                output::warn(&format!("Failed to write {CONFIG_FILE}: {e}"));
+            if let Err(e) = write_atomic(path, &contents) {
+                output::warn(&format!(
+                    "Failed to write {}: {e}",
+                    path.display()
+                ));
             }
         }
         Err(e) => {
@@ -192,6 +295,12 @@ pub fn merge(cli: &CliArgs, existing: Config) -> Config {
     if let Some(v) = cli.landlock {
         config.no_landlock = Some(!v);
     }
+    if let Some(v) = cli.status_bar {
+        config.no_status_bar = Some(!v);
+    }
+    if let Some(ref style) = cli.status_bar_style {
+        config.status_bar_style = Some(style.clone());
+    }
 
     config
 }
@@ -246,6 +355,10 @@ pub fn display_status(config: &Config) {
     bool_opt("Mise", config.no_mise);
     bool_opt("Landlock", config.no_landlock);
     bool_opt("Lockdown", config.lockdown.map(|v| !v));
+    bool_opt("Status bar", config.no_status_bar);
+    if config.status_bar_enabled() {
+        output::status_header("  Style", config.status_bar_style());
+    }
 }
 
 #[cfg(test)]
@@ -378,6 +491,7 @@ another_removed_field = true
         assert_eq!(cfg.no_mise, None);
         assert_eq!(cfg.lockdown, None);
         assert_eq!(cfg.no_landlock, None);
+        assert_eq!(cfg.no_status_bar, None);
     }
 
     #[test]
@@ -395,6 +509,24 @@ lockdown = false
         let cfg = parse_toml(toml).unwrap();
         assert_eq!(cfg.no_landlock, None);
         assert!(cfg.landlock_enabled());
+    }
+
+    #[test]
+    fn regression_v0_4_5_config_without_no_status_bar() {
+        // v0.4.5 configs don't have no_status_bar field.
+        // They must still parse and default to status bar disabled.
+        let toml = r#"
+command = ["claude"]
+rw_maps = []
+ro_maps = []
+no_gpu = false
+no_docker = false
+lockdown = false
+no_landlock = false
+"#;
+        let cfg = parse_toml(toml).unwrap();
+        assert_eq!(cfg.no_status_bar, None);
+        assert!(!cfg.status_bar_enabled());
     }
 
     #[test]
@@ -425,6 +557,8 @@ lockdown = false
             no_mise: None,
             lockdown: Some(true),
             no_landlock: Some(false),
+            no_status_bar: None,
+            status_bar_style: None,
         };
         let serialized = serialize_config(&config).unwrap();
         let deserialized = parse_toml(&serialized).unwrap();
@@ -751,6 +885,54 @@ lockdown = false
         .lockdown_enabled());
     }
 
+    #[test]
+    fn status_bar_enabled_accessor() {
+        // Default OFF: None means disabled
+        assert!(!Config {
+            no_status_bar: None,
+            ..Config::default()
+        }
+        .status_bar_enabled());
+        // Explicitly disabled
+        assert!(!Config {
+            no_status_bar: Some(true),
+            ..Config::default()
+        }
+        .status_bar_enabled());
+        // Explicitly enabled
+        assert!(Config {
+            no_status_bar: Some(false),
+            ..Config::default()
+        }
+        .status_bar_enabled());
+    }
+
+    #[test]
+    fn merge_status_bar_flag_overrides() {
+        let existing = Config {
+            no_status_bar: None,
+            ..Config::default()
+        };
+
+        // --status-bar sets no_status_bar to false (enabled)
+        let cli = CliArgs {
+            status_bar: Some(true),
+            ..CliArgs::default()
+        };
+        let merged = merge(&cli, existing.clone());
+        assert_eq!(merged.no_status_bar, Some(false));
+        assert!(merged.status_bar_enabled());
+
+        // --no-status-bar sets no_status_bar to true (disabled)
+        let cli = CliArgs {
+            status_bar: Some(false),
+            ..CliArgs::default()
+        };
+        let merged = merge(&cli, existing);
+        assert_eq!(merged.no_status_bar, Some(true));
+        assert!(!merged.status_bar_enabled());
+    }
+
     // ── File I/O tests (using temp dirs) ───────────────────────
 
     #[test]
@@ -774,6 +956,8 @@ lockdown = false
             no_mise: None,
             lockdown: Some(false),
             no_landlock: None,
+            no_status_bar: None,
+            status_bar_style: None,
         };
         save(&config);
 

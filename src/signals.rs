@@ -20,7 +20,7 @@ extern "C" fn forward_signal(sig: nix::libc::c_int) {
                 }
             }
         }
-        crate::statusbar::redraw();
+        crate::statusbar::request_redraw(true);
         return;
     }
 

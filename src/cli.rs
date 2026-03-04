@@ -22,6 +22,8 @@ OPTIONS:
     --no-docker / --docker  Disable/enable Docker socket passthrough
     --no-display / --display Disable/enable X11/Wayland passthrough (Linux only)
     --no-mise / --mise      Disable/enable mise integration
+    -s, --status-bar[=light] Enable status line (default: dark, =light for light theme)
+    --no-status-bar          Disable persistent status line
     --clean                 Ignore existing .ai-jail config, start fresh
     --dry-run               Print the sandbox command without executing
     --init                  Create/update .ai-jail config and exit
@@ -42,6 +44,8 @@ pub struct CliArgs {
     pub docker: Option<bool>,
     pub display: Option<bool>,
     pub mise: Option<bool>,
+    pub status_bar: Option<bool>,
+    pub status_bar_style: Option<String>,
     pub clean: bool,
     pub dry_run: bool,
     pub init: bool,
@@ -86,6 +90,24 @@ pub fn parse_from(mut parser: lexopt::Parser) -> Result<CliArgs, String> {
             Long("no-display") => args.display = Some(false),
             Long("mise") => args.mise = Some(true),
             Long("no-mise") => args.mise = Some(false),
+            Long("status-bar") | Short('s') => {
+                args.status_bar = Some(true);
+                if let Some(val) = parser.optional_value() {
+                    let s = val.to_string_lossy();
+                    match s.as_ref() {
+                        "dark" | "light" => {
+                            args.status_bar_style = Some(s.into_owned())
+                        }
+                        _ => {
+                            return Err(format!(
+                                "invalid status bar style: \
+                                 {s} (expected 'dark' or 'light')"
+                            ))
+                        }
+                    }
+                }
+            }
+            Long("no-status-bar") => args.status_bar = Some(false),
             Long("landlock-exec") => args.landlock_exec = true,
             Long("clean") => args.clean = true,
             Long("dry-run") => args.dry_run = true,
@@ -409,6 +431,45 @@ mod tests {
     }
 
     // ── Last-wins behavior for toggles ─────────────────────────
+
+    #[test]
+    fn parse_status_bar() {
+        let args = parse_test(&["--status-bar", "bash"]).unwrap();
+        assert_eq!(args.status_bar, Some(true));
+    }
+
+    #[test]
+    fn parse_no_status_bar() {
+        let args = parse_test(&["--no-status-bar", "bash"]).unwrap();
+        assert_eq!(args.status_bar, Some(false));
+    }
+
+    #[test]
+    fn parse_status_bar_short() {
+        let args = parse_test(&["-s", "bash"]).unwrap();
+        assert_eq!(args.status_bar, Some(true));
+        assert_eq!(args.status_bar_style, None);
+    }
+
+    #[test]
+    fn parse_status_bar_eq_light() {
+        let args = parse_test(&["--status-bar=light", "bash"]).unwrap();
+        assert_eq!(args.status_bar, Some(true));
+        assert_eq!(args.status_bar_style.as_deref(), Some("light"));
+    }
+
+    #[test]
+    fn parse_status_bar_eq_dark() {
+        let args = parse_test(&["--status-bar=dark", "bash"]).unwrap();
+        assert_eq!(args.status_bar, Some(true));
+        assert_eq!(args.status_bar_style.as_deref(), Some("dark"));
+    }
+
+    #[test]
+    fn parse_status_bar_eq_invalid() {
+        let result = parse_test(&["--status-bar=neon", "bash"]);
+        assert!(result.is_err());
+    }
 
     #[test]
     fn parse_last_wins_gpu() {

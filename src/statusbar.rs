@@ -2,14 +2,15 @@
 //!
 //! Layout: ` /path | command              ai-jail 0.4.5 `
 //!
-//! `redraw()` is async-signal-safe so it can be called from
-//! the SIGWINCH handler.
+//! Redraws are requested via atomics and performed from the PTY
+//! IO loop when the output stream is in a safe boundary.
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 static STYLE_DARK: AtomicBool = AtomicBool::new(true);
 static DIRTY: AtomicBool = AtomicBool::new(false);
+static NEED_CLAMP: AtomicBool = AtomicBool::new(false);
 
 const MAX_DIR: usize = 4096;
 static mut DIR_BUF: [u8; MAX_DIR] = [0u8; MAX_DIR];
@@ -126,6 +127,7 @@ pub fn setup(project_dir: &std::path::Path, command: &[String], style: &str) {
 
     ACTIVE.store(true, Ordering::SeqCst);
     DIRTY.store(false, Ordering::SeqCst);
+    NEED_CLAMP.store(false, Ordering::SeqCst);
     draw(rows, cols);
 
     // Ensure cursor is within the scroll region.
@@ -135,12 +137,23 @@ pub fn setup(project_dir: &std::path::Path, command: &[String], style: &str) {
 /// Signal that a newer version is available. Triggers redraw.
 pub fn set_update_available() {
     UPDATE_AVAILABLE.store(true, Ordering::SeqCst);
-    DIRTY.store(true, Ordering::SeqCst);
+    request_redraw(false);
 }
 
-/// Consume and clear pending redraw request.
-pub fn take_dirty() -> bool {
-    DIRTY.swap(false, Ordering::SeqCst)
+/// Request a redraw from async contexts.
+/// If `clamp` is true, cursor will be clamped after redraw.
+pub fn request_redraw(clamp: bool) {
+    DIRTY.store(true, Ordering::SeqCst);
+    if clamp {
+        NEED_CLAMP.store(true, Ordering::SeqCst);
+    }
+}
+
+/// Consume and clear pending redraw/clamp requests.
+pub fn take_requests() -> (bool, bool) {
+    let redraw = DIRTY.swap(false, Ordering::SeqCst);
+    let clamp = NEED_CLAMP.swap(false, Ordering::SeqCst);
+    (redraw, clamp)
 }
 
 /// Clamp the cursor into the scroll region.
@@ -220,6 +233,7 @@ pub fn teardown() {
     }
     ACTIVE.store(false, Ordering::SeqCst);
     DIRTY.store(false, Ordering::SeqCst);
+    NEED_CLAMP.store(false, Ordering::SeqCst);
 
     let rows = term_size().map(|(r, _)| r).unwrap_or(24);
 
@@ -485,5 +499,14 @@ mod tests {
     #[test]
     fn update_available_default_false() {
         assert!(!UPDATE_AVAILABLE.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn request_redraw_tracks_clamp_flag() {
+        DIRTY.store(false, Ordering::SeqCst);
+        NEED_CLAMP.store(false, Ordering::SeqCst);
+        request_redraw(true);
+        assert_eq!(take_requests(), (true, true));
+        assert_eq!(take_requests(), (false, false));
     }
 }
