@@ -443,6 +443,7 @@ fn flush_statusbar_if_safe(
     stream: &StreamState,
     pending_redraw: &mut bool,
     pending_clamp: &mut bool,
+    pending_resize: &mut bool,
 ) {
     if !*pending_redraw || !stream.can_inject() {
         return;
@@ -453,6 +454,14 @@ fn flush_statusbar_if_safe(
         *pending_clamp = false;
     }
     *pending_redraw = false;
+    // Resize the PTY AFTER the scroll region is correct.
+    // TIOCSWINSZ makes the kernel deliver SIGWINCH to the
+    // child, which then redraws onto the correctly set up
+    // terminal — matching the tmux/mtm approach.
+    if *pending_resize {
+        resize_pty();
+        *pending_resize = false;
+    }
 }
 
 fn io_loop(master: &OwnedFd) {
@@ -465,6 +474,7 @@ fn io_loop(master: &OwnedFd) {
     let mut reset = ResetDetector::new();
     let mut pending_redraw = false;
     let mut pending_clamp = false;
+    let mut pending_resize = false;
 
     loop {
         let mut fds = [
@@ -479,6 +489,31 @@ fn io_loop(master: &OwnedFd) {
         if req_clamp {
             pending_clamp = true;
             pending_redraw = true;
+            // clamp is only requested on SIGWINCH, which means
+            // the real terminal changed size.  Resize the PTY
+            // after the status bar redraw sets the correct
+            // scroll region — not before.
+            pending_resize = true;
+        }
+
+        // If a redraw is pending and the stream is at a safe
+        // boundary, flush immediately instead of waiting for
+        // poll().  This is critical for SIGWINCH: the signal
+        // handler does NOT call resize_pty(), so the child
+        // hasn't been notified yet.  We must set the correct
+        // scroll region and THEN resize the PTY so the child
+        // redraws onto a properly prepared terminal.
+        if pending_redraw && stream.can_inject() {
+            crate::statusbar::redraw();
+            if pending_clamp {
+                crate::statusbar::clamp_cursor();
+                pending_clamp = false;
+            }
+            pending_redraw = false;
+            if pending_resize {
+                resize_pty();
+                pending_resize = false;
+            }
         }
 
         match poll(&mut fds, PollTimeout::from(100_u16)) {
@@ -494,6 +529,10 @@ fn io_loop(master: &OwnedFd) {
                         pending_clamp = false;
                     }
                     pending_redraw = false;
+                    if pending_resize {
+                        resize_pty();
+                        pending_resize = false;
+                    }
                 }
                 continue;
             }
@@ -542,6 +581,7 @@ fn io_loop(master: &OwnedFd) {
                     &stream,
                     &mut pending_redraw,
                     &mut pending_clamp,
+                    &mut pending_resize,
                 );
                 break;
             }
@@ -555,6 +595,7 @@ fn io_loop(master: &OwnedFd) {
                 &stream,
                 &mut pending_redraw,
                 &mut pending_clamp,
+                &mut pending_resize,
             );
         }
 
