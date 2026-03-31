@@ -145,6 +145,7 @@ fn io_loop(master: &OwnedFd, init_rows: u16, init_cols: u16) {
     let mut prev_screen = parser.screen().clone();
     let mut pending_redraw = false;
     let mut was_alt_screen = false;
+    crate::statusbar::update_terminal_state(parser.screen());
 
     // Push existing terminal content into scrollback so the
     // child starts on a clean canvas without losing history.
@@ -190,6 +191,7 @@ fn io_loop(master: &OwnedFd, init_rows: u16, init_cols: u16) {
 
                 prev_screen = screen.clone();
                 was_alt_screen = on_alt;
+                crate::statusbar::update_terminal_state(screen);
 
                 // Redraw status bar, then notify child
                 crate::statusbar::redraw();
@@ -291,6 +293,7 @@ fn io_loop(master: &OwnedFd, init_rows: u16, init_cols: u16) {
                         }
 
                         prev_screen = screen.clone();
+                        crate::statusbar::update_terminal_state(screen);
                         pending_redraw = true;
                     }
                     Err(nix::errno::Errno::EINTR) => {}

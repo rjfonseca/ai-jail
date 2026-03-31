@@ -25,6 +25,14 @@ static UPDATE_AVAILABLE: AtomicBool = AtomicBool::new(false);
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+const MAX_CURSOR_STATE: usize = 4096;
+static mut CURSOR_STATE_BUF: [u8; MAX_CURSOR_STATE] = [0u8; MAX_CURSOR_STATE];
+static CURSOR_STATE_LEN: AtomicUsize = AtomicUsize::new(0);
+
+const MAX_ATTR_STATE: usize = 512;
+static mut ATTR_STATE_BUF: [u8; MAX_ATTR_STATE] = [0u8; MAX_ATTR_STATE];
+static ATTR_STATE_LEN: AtomicUsize = AtomicUsize::new(0);
+
 // U+2026 HORIZONTAL ELLIPSIS: 3 UTF-8 bytes, 1 visible column
 const ELLIPSIS: [u8; 3] = [0xe2, 0x80, 0xa6];
 // U+2191 UPWARDS ARROW: 3 UTF-8 bytes, 1 visible column
@@ -98,6 +106,27 @@ fn write_move_clear_row(row: u16, buf: &mut [u8], pos: &mut usize) {
     *pos += 4;
 }
 
+fn store_terminal_state(cursor_state: &[u8], attr_state: &[u8]) {
+    let cursor_len = cursor_state.len().min(MAX_CURSOR_STATE);
+    unsafe {
+        CURSOR_STATE_BUF[..cursor_len]
+            .copy_from_slice(&cursor_state[..cursor_len]);
+    }
+    CURSOR_STATE_LEN.store(cursor_len, Ordering::SeqCst);
+
+    let attr_len = attr_state.len().min(MAX_ATTR_STATE);
+    unsafe {
+        ATTR_STATE_BUF[..attr_len].copy_from_slice(&attr_state[..attr_len]);
+    }
+    ATTR_STATE_LEN.store(attr_len, Ordering::SeqCst);
+}
+
+pub fn update_terminal_state(screen: &vt100::Screen) {
+    let cursor_state = screen.cursor_state_formatted();
+    let attr_state = screen.attributes_formatted();
+    store_terminal_state(&cursor_state, &attr_state);
+}
+
 /// Set up the status bar. Call before spawning the child.
 /// `style` must be `"dark"` or `"light"`.
 pub fn setup(project_dir: &std::path::Path, command: &[String], style: &str) {
@@ -132,6 +161,8 @@ pub fn setup(project_dir: &std::path::Path, command: &[String], style: &str) {
         cmd_pos += n;
     }
     CMD_LEN.store(cmd_pos, Ordering::SeqCst);
+
+    store_terminal_state(b"\x1b[1;1H", b"\x1b[0m");
 
     let Some((rows, cols)) = term_size() else {
         return;
@@ -268,16 +299,13 @@ fn draw(rows: u16, cols: u16) {
         }};
     }
 
-    // 1. Save cursor
-    put!(b"\x1b7");
-
-    // 2. Move to last row + clear it: \x1b[{rows};1H\x1b[2K
+    // Move to last row + clear it: \x1b[{rows};1H\x1b[2K
     put!(b"\x1b[");
     pos += write_u16(rows, &mut buf[pos..]);
     put!(b";1H");
     put!(b"\x1b[2K");
 
-    // 4. Style (softer than previous bold variants)
+    // Style (softer than previous bold variants)
     if dark {
         put!(b"\x1b[37;40m"); // white on black
     } else {
@@ -421,8 +449,18 @@ fn draw(rows: u16, cols: u16) {
     // 6. Reset attributes
     put!(b"\x1b[0m");
 
-    // 7. Restore cursor
-    put!(b"\x1b8");
+    // Restore child terminal state without touching the terminal's
+    // save/restore cursor slot, which many TUIs also use.
+    let cursor_len = CURSOR_STATE_LEN.load(Ordering::SeqCst);
+    if cursor_len > 0 {
+        let cursor_state = unsafe { &CURSOR_STATE_BUF[..cursor_len] };
+        put!(cursor_state);
+    }
+    let attr_len = ATTR_STATE_LEN.load(Ordering::SeqCst);
+    if attr_len > 0 {
+        let attr_state = unsafe { &ATTR_STATE_BUF[..attr_len] };
+        put!(attr_state);
+    }
 
     raw_write(&buf[..pos]);
 }
@@ -491,5 +529,25 @@ mod tests {
         request_redraw();
         assert!(take_requests());
         assert!(!take_requests());
+    }
+
+    #[test]
+    fn update_terminal_state_restores_cursor_without_decsc() {
+        let mut parser = vt100::Parser::new(24, 80, 0);
+        parser.process(b"\x1b[31mhello\x1b[5;10H");
+        update_terminal_state(parser.screen());
+
+        let cursor_len = CURSOR_STATE_LEN.load(Ordering::SeqCst);
+        let attr_len = ATTR_STATE_LEN.load(Ordering::SeqCst);
+
+        let cursor_state = unsafe { &CURSOR_STATE_BUF[..cursor_len] };
+        let attr_state = unsafe { &ATTR_STATE_BUF[..attr_len] };
+
+        assert!(!cursor_state.windows(2).any(|w| w == b"\x1b7"));
+        assert!(!cursor_state.windows(2).any(|w| w == b"\x1b8"));
+        assert!(cursor_state.windows(6).any(|w| w == b"\x1b[5;10"));
+        assert!(!attr_state.is_empty());
+        assert_eq!(attr_state[0], 0x1b);
+        assert!(attr_state.ends_with(b"m"));
     }
 }

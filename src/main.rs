@@ -10,6 +10,15 @@ mod sandbox;
 mod signals;
 mod statusbar;
 
+fn command_needs_direct_tty(command: &[String]) -> bool {
+    command.first().is_some_and(|cmd| {
+        std::path::Path::new(cmd)
+            .file_name()
+            .and_then(|name| name.to_str())
+            == Some("crush")
+    })
+}
+
 fn run_landlock_exec(cli: &cli::CliArgs) -> Result<i32, String> {
     use std::os::unix::process::CommandExt;
 
@@ -124,13 +133,19 @@ fn run() -> Result<i32, String> {
     // Set up status bar if enabled and stdio is attached to a terminal
     let stdout_is_tty = std::io::IsTerminal::is_terminal(&std::io::stdout());
     let stdin_is_tty = std::io::IsTerminal::is_terminal(&std::io::stdin());
+    let needs_direct_tty = command_needs_direct_tty(&config.command);
     let use_status_bar = config.status_bar_enabled()
         && stdout_is_tty
         && stdin_is_tty
-        && !cli.exec;
+        && !cli.exec
+        && !needs_direct_tty;
     if cli.verbose {
         if config.status_bar_enabled() {
-            if stdout_is_tty && stdin_is_tty {
+            if needs_direct_tty {
+                output::verbose(
+                    "Status bar: skipped (crush requires direct terminal passthrough)",
+                );
+            } else if stdout_is_tty && stdin_is_tty {
                 output::verbose("Status bar: enabled");
             } else {
                 output::verbose("Status bar: skipped (stdio is not a tty)");
@@ -200,5 +215,23 @@ fn main() {
             output::error(&msg);
             std::process::exit(1);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::command_needs_direct_tty;
+
+    #[test]
+    fn crush_requires_direct_tty() {
+        assert!(command_needs_direct_tty(&["crush".into()]));
+        assert!(command_needs_direct_tty(&["/usr/bin/crush".into()]));
+    }
+
+    #[test]
+    fn other_commands_do_not_require_direct_tty() {
+        assert!(!command_needs_direct_tty(&[]));
+        assert!(!command_needs_direct_tty(&["codex".into()]));
+        assert!(!command_needs_direct_tty(&["/usr/bin/bash".into()]));
     }
 }

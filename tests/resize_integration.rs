@@ -89,9 +89,9 @@ fn strip_ansi(data: &[u8]) -> String {
 /// Dup slave fd for use as Stdio (avoids double-close with
 /// OwnedFd).
 unsafe fn slave_stdio(slave_fd: i32) -> std::process::Stdio {
-    let duped = nix::libc::dup(slave_fd);
+    let duped = unsafe { nix::libc::dup(slave_fd) };
     assert!(duped >= 0, "dup() failed");
-    std::process::Stdio::from_raw_fd(duped)
+    unsafe { std::process::Stdio::from_raw_fd(duped) }
 }
 
 /// Test: child in PTY gets correct initial size.
