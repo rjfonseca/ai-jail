@@ -31,7 +31,7 @@ fn read_available(
     master: &std::os::unix::io::OwnedFd,
     timeout_ms: i32,
 ) -> Vec<u8> {
-    use nix::poll::{poll, PollFd, PollFlags, PollTimeout};
+    use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
     let fd = unsafe {
         std::os::unix::io::BorrowedFd::borrow_raw(master.as_raw_fd())
     };

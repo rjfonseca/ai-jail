@@ -17,7 +17,9 @@ pub fn check() -> Result<(), String> {
 }
 
 pub fn platform_notes(config: &Config) {
-    output::warn("macOS backend uses deprecated sandbox-exec; treat this as legacy containment.");
+    output::warn(
+        "macOS backend uses deprecated sandbox-exec; treat this as legacy containment.",
+    );
     if !config.gpu_enabled() {
         output::info("--no-gpu has no effect on macOS (Metal is system-level)");
     }
@@ -449,8 +451,10 @@ mod tests {
         let profile = generate_sbpl_profile(&config, &project, false, true);
         assert!(!profile.contains("(allow network-outbound)"));
         assert!(!profile.contains("(allow file-read*)\n"));
-        assert!(profile
-            .contains("(allow file-read* (subpath \"/tmp/test-project\"))"));
+        assert!(
+            profile
+                .contains("(allow file-read* (subpath \"/tmp/test-project\"))")
+        );
         // Lockdown should have no path-based write allowances (project, dotfiles, tmp)
         // but still allows device writes (/dev/null etc.) and PTY writes
         assert!(profile.contains("no host file-write allowances"));

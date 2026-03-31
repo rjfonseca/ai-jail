@@ -16,7 +16,7 @@
 //! its state is re-rendered to the real terminal, giving ai-jail
 //! full control over screen recovery.
 
-use nix::poll::{poll, PollFd, PollFlags, PollTimeout};
+use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
 use nix::sys::termios::{self, SetArg, Termios};
 use std::os::unix::io::{AsRawFd, BorrowedFd, OwnedFd};
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};

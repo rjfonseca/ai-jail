@@ -830,138 +830,180 @@ no_status_bar = false
 
     #[test]
     fn gpu_enabled_accessor() {
-        assert!(Config {
-            no_gpu: None,
-            ..Config::default()
-        }
-        .gpu_enabled());
-        assert!(!Config {
-            no_gpu: Some(true),
-            ..Config::default()
-        }
-        .gpu_enabled());
-        assert!(Config {
-            no_gpu: Some(false),
-            ..Config::default()
-        }
-        .gpu_enabled());
+        assert!(
+            Config {
+                no_gpu: None,
+                ..Config::default()
+            }
+            .gpu_enabled()
+        );
+        assert!(
+            !Config {
+                no_gpu: Some(true),
+                ..Config::default()
+            }
+            .gpu_enabled()
+        );
+        assert!(
+            Config {
+                no_gpu: Some(false),
+                ..Config::default()
+            }
+            .gpu_enabled()
+        );
     }
 
     #[test]
     fn docker_enabled_accessor() {
-        assert!(Config {
-            no_docker: None,
-            ..Config::default()
-        }
-        .docker_enabled());
-        assert!(!Config {
-            no_docker: Some(true),
-            ..Config::default()
-        }
-        .docker_enabled());
-        assert!(Config {
-            no_docker: Some(false),
-            ..Config::default()
-        }
-        .docker_enabled());
+        assert!(
+            Config {
+                no_docker: None,
+                ..Config::default()
+            }
+            .docker_enabled()
+        );
+        assert!(
+            !Config {
+                no_docker: Some(true),
+                ..Config::default()
+            }
+            .docker_enabled()
+        );
+        assert!(
+            Config {
+                no_docker: Some(false),
+                ..Config::default()
+            }
+            .docker_enabled()
+        );
     }
 
     #[test]
     fn display_enabled_accessor() {
-        assert!(Config {
-            no_display: None,
-            ..Config::default()
-        }
-        .display_enabled());
-        assert!(!Config {
-            no_display: Some(true),
-            ..Config::default()
-        }
-        .display_enabled());
-        assert!(Config {
-            no_display: Some(false),
-            ..Config::default()
-        }
-        .display_enabled());
+        assert!(
+            Config {
+                no_display: None,
+                ..Config::default()
+            }
+            .display_enabled()
+        );
+        assert!(
+            !Config {
+                no_display: Some(true),
+                ..Config::default()
+            }
+            .display_enabled()
+        );
+        assert!(
+            Config {
+                no_display: Some(false),
+                ..Config::default()
+            }
+            .display_enabled()
+        );
     }
 
     #[test]
     fn mise_enabled_accessor() {
-        assert!(Config {
-            no_mise: None,
-            ..Config::default()
-        }
-        .mise_enabled());
-        assert!(!Config {
-            no_mise: Some(true),
-            ..Config::default()
-        }
-        .mise_enabled());
-        assert!(Config {
-            no_mise: Some(false),
-            ..Config::default()
-        }
-        .mise_enabled());
+        assert!(
+            Config {
+                no_mise: None,
+                ..Config::default()
+            }
+            .mise_enabled()
+        );
+        assert!(
+            !Config {
+                no_mise: Some(true),
+                ..Config::default()
+            }
+            .mise_enabled()
+        );
+        assert!(
+            Config {
+                no_mise: Some(false),
+                ..Config::default()
+            }
+            .mise_enabled()
+        );
     }
 
     #[test]
     fn landlock_enabled_accessor() {
-        assert!(Config {
-            no_landlock: None,
-            ..Config::default()
-        }
-        .landlock_enabled());
-        assert!(!Config {
-            no_landlock: Some(true),
-            ..Config::default()
-        }
-        .landlock_enabled());
-        assert!(Config {
-            no_landlock: Some(false),
-            ..Config::default()
-        }
-        .landlock_enabled());
+        assert!(
+            Config {
+                no_landlock: None,
+                ..Config::default()
+            }
+            .landlock_enabled()
+        );
+        assert!(
+            !Config {
+                no_landlock: Some(true),
+                ..Config::default()
+            }
+            .landlock_enabled()
+        );
+        assert!(
+            Config {
+                no_landlock: Some(false),
+                ..Config::default()
+            }
+            .landlock_enabled()
+        );
     }
 
     #[test]
     fn lockdown_enabled_accessor() {
-        assert!(!Config {
-            lockdown: None,
-            ..Config::default()
-        }
-        .lockdown_enabled());
-        assert!(Config {
-            lockdown: Some(true),
-            ..Config::default()
-        }
-        .lockdown_enabled());
-        assert!(!Config {
-            lockdown: Some(false),
-            ..Config::default()
-        }
-        .lockdown_enabled());
+        assert!(
+            !Config {
+                lockdown: None,
+                ..Config::default()
+            }
+            .lockdown_enabled()
+        );
+        assert!(
+            Config {
+                lockdown: Some(true),
+                ..Config::default()
+            }
+            .lockdown_enabled()
+        );
+        assert!(
+            !Config {
+                lockdown: Some(false),
+                ..Config::default()
+            }
+            .lockdown_enabled()
+        );
     }
 
     #[test]
     fn status_bar_enabled_accessor() {
         // Default ON: None means enabled
-        assert!(Config {
-            no_status_bar: None,
-            ..Config::default()
-        }
-        .status_bar_enabled());
+        assert!(
+            Config {
+                no_status_bar: None,
+                ..Config::default()
+            }
+            .status_bar_enabled()
+        );
         // Explicitly disabled
-        assert!(!Config {
-            no_status_bar: Some(true),
-            ..Config::default()
-        }
-        .status_bar_enabled());
+        assert!(
+            !Config {
+                no_status_bar: Some(true),
+                ..Config::default()
+            }
+            .status_bar_enabled()
+        );
         // Explicitly enabled
-        assert!(Config {
-            no_status_bar: Some(false),
-            ..Config::default()
-        }
-        .status_bar_enabled());
+        assert!(
+            Config {
+                no_status_bar: Some(false),
+                ..Config::default()
+            }
+            .status_bar_enabled()
+        );
     }
 
     #[test]

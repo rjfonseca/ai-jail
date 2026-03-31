@@ -398,7 +398,9 @@ fn bootstrap_crush(verbose: bool) -> Result<(), String> {
             path.display()
         ));
     } else {
-        output::info("Crush: no config found, skipping (ai-jail's sandbox is the security layer)");
+        output::info(
+            "Crush: no config found, skipping (ai-jail's sandbox is the security layer)",
+        );
     }
 
     Ok(())
@@ -663,8 +665,7 @@ mod tests {
         assert!(result.contains_key("enabledPlugins"));
         assert_eq!(result["alwaysThinkingEnabled"], true);
         assert_eq!(
-            result["enabledPlugins"]
-                ["rust-analyzer-lsp@claude-plugins-official"],
+            result["enabledPlugins"]["rust-analyzer-lsp@claude-plugins-official"],
             true
         );
 

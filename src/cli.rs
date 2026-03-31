@@ -111,7 +111,7 @@ pub fn parse_from(mut parser: lexopt::Parser) -> Result<CliArgs, String> {
                             return Err(format!(
                                 "invalid status bar style: \
                                  {s} (expected 'dark' or 'light')"
-                            ))
+                            ));
                         }
                     }
                 } else {

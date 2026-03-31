@@ -1,6 +1,6 @@
 use crate::config::Config;
 use crate::output;
-use nix::sys::resource::{getrlimit, setrlimit, Resource};
+use nix::sys::resource::{Resource, getrlimit, setrlimit};
 
 // Normal mode: generous limits that prevent abuse
 // without breaking build tools or AI agents.

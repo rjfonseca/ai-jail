@@ -73,11 +73,7 @@ fn mise_bin() -> Option<PathBuf> {
     std::env::var("PATH").ok().and_then(|paths| {
         paths.split(':').find_map(|dir| {
             let p = PathBuf::from(dir).join("mise");
-            if p.is_file() {
-                Some(p)
-            } else {
-                None
-            }
+            if p.is_file() { Some(p) } else { None }
         })
     })
 }
@@ -182,7 +178,9 @@ pub fn prepare() -> Result<SandboxGuard, String> {
 
 pub fn platform_notes(config: &Config) {
     if config.lockdown_enabled() {
-        crate::output::info("Lockdown mode enabled: read-only project, no host write mounts, no mise.");
+        crate::output::info(
+            "Lockdown mode enabled: read-only project, no host write mounts, no mise.",
+        );
     }
     #[cfg(target_os = "macos")]
     {

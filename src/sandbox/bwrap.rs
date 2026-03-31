@@ -341,7 +341,7 @@ fn new_hosts_file() -> Result<(PathBuf, std::fs::File), String> {
             }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(e) => {
-                return Err(format!("Failed to create temp hosts file: {e}"))
+                return Err(format!("Failed to create temp hosts file: {e}"));
             }
         }
     }
