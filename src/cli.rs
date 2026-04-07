@@ -25,7 +25,8 @@ OPTIONS:
     --no-docker / --docker  Disable/enable Docker socket passthrough
     --no-display / --display Disable/enable X11/Wayland passthrough (Linux only)
     --no-mise / --mise      Disable/enable mise integration
-    -s, --status-bar[=light] Set status line theme (default on, dark unless =light)
+    -s, --status-bar[=STYLE] Set status line theme (dark | light | pastel; default dark)
+                            Pastel picks a random pastel palette per session
     --no-status-bar          Disable persistent status line
     --exec                   Direct execution mode (no PTY proxy, no status bar)
     --allow-tcp-port <PORT> Allow outbound TCP to PORT in lockdown (repeatable)
@@ -134,13 +135,13 @@ pub fn parse_from(mut parser: lexopt::Parser) -> Result<CliArgs, String> {
                 if let Some(val) = parser.optional_value() {
                     let s = val.to_string_lossy();
                     match s.as_ref() {
-                        "dark" | "light" => {
+                        "dark" | "light" | "pastel" => {
                             args.status_bar_style = Some(s.into_owned())
                         }
                         _ => {
                             return Err(format!(
                                 "invalid status bar style: \
-                                 {s} (expected 'dark' or 'light')"
+                                 {s} (expected 'dark', 'light', or 'pastel')"
                             ));
                         }
                     }

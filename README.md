@@ -245,7 +245,7 @@ If no command is given and no `.ai-jail` config exists, defaults to `bash`.
 | `--docker` / `--no-docker` | Enable/disable Docker socket |
 | `--display` / `--no-display` | Enable/disable X11/Wayland |
 | `--mise` / `--no-mise` | Enable/disable mise integration |
-| `-s`, `--status-bar[=light]` | Enable persistent status line (dark or light theme) |
+| `-s`, `--status-bar[=STYLE]` | Enable persistent status line. `STYLE` is `dark` (default), `light`, or `pastel` (random pastel palette per session — use `=dark` / `=light` to switch back) |
 | `--no-status-bar` | Disable persistent status line |
 | `--exec` | Direct execution mode (no PTY proxy, no status bar) |
 | `--clean` | Ignore existing config, start fresh |
@@ -327,7 +327,7 @@ When CLI flags and an existing config are both present:
 | `no_rlimits` | bool | not set (auto) | `true` disables resource limits |
 | `lockdown` | bool | not set (disabled) | `true` enables strict read-only lockdown mode |
 
-Status bar preferences (`no_status_bar`, `status_bar_style`) are stored in `$HOME/.ai-jail` (global user config), not in per-project `.ai-jail` files.
+Status bar preferences (`no_status_bar`, `status_bar_style`) are stored in `$HOME/.ai-jail` (global user config), not in per-project `.ai-jail` files. `status_bar_style` accepts `"dark"`, `"light"`, or `"pastel"` — pastel rotates through a curated set of soft pastel palettes (with high-contrast foreground), picking a new one at random for each session. Set it back to `"dark"` or `"light"` to disable the rotation.
 
 When a boolean field is not set, the feature is enabled if the resource exists on the host.
 
