@@ -10,13 +10,23 @@ mod sandbox;
 mod signals;
 mod statusbar;
 
-fn command_needs_direct_tty(command: &[String]) -> bool {
-    command.first().is_some_and(|cmd| {
+fn command_basename(command: &[String]) -> Option<&str> {
+    command.first().and_then(|cmd| {
         std::path::Path::new(cmd)
             .file_name()
             .and_then(|name| name.to_str())
-            == Some("crush")
     })
+}
+
+fn command_needs_direct_tty(command: &[String]) -> bool {
+    command_basename(command) == Some("crush")
+}
+
+fn default_resize_redraw_key(command: &[String]) -> Option<&'static str> {
+    match command_basename(command) {
+        Some("codex") => Some("ctrl-shift-l"),
+        _ => None,
+    }
 }
 
 fn run_landlock_exec(cli: &cli::CliArgs) -> Result<i32, String> {
@@ -202,9 +212,44 @@ fn run() -> Result<i32, String> {
     sandbox::rlimits::apply(&config, cli.verbose);
 
     let exit_code = if use_status_bar {
+        let resize_redraw_key =
+            match config.resize_redraw_key.as_deref() {
+                Some(spec) => match pty::parse_resize_redraw_key(spec) {
+                    Ok(seq) => seq,
+                    Err(e) => {
+                        output::warn(&format!(
+                            "Ignoring invalid resize_redraw_key {spec:?}: {e}"
+                        ));
+                        None
+                    }
+                },
+                None => default_resize_redraw_key(&config.command).and_then(
+                    |spec| pty::parse_resize_redraw_key(spec).ok().flatten(),
+                ),
+            };
+
+        if cli.verbose {
+            match (&resize_redraw_key, config.resize_redraw_key.as_deref()) {
+                (Some(_), Some(spec)) => output::verbose(&format!(
+                    "Resize redraw key: {spec} (used on terminal resize)"
+                )),
+                (None, Some(spec)) => output::verbose(&format!(
+                    "Resize redraw key: {spec} (disabled)"
+                )),
+                (Some(_), None)
+                    if default_resize_redraw_key(&config.command).is_some() =>
+                {
+                    output::verbose(
+                        "Resize redraw key: ctrl-shift-l (codex default)",
+                    );
+                }
+                _ => {}
+            }
+        }
+
         // PTY proxy path: ai-jail owns the real terminal, child
         // gets a PTY slave. This keeps the status bar persistent.
-        match pty::run(&mut cmd) {
+        match pty::run(&mut cmd, resize_redraw_key.as_deref()) {
             Ok(code) => {
                 statusbar::teardown();
                 code

@@ -34,6 +34,8 @@ pub struct Config {
     #[serde(default)]
     pub status_bar_style: Option<String>,
     #[serde(default)]
+    pub resize_redraw_key: Option<String>,
+    #[serde(default)]
     pub no_seccomp: Option<bool>,
     #[serde(default)]
     pub no_rlimits: Option<bool>,
@@ -132,7 +134,7 @@ pub fn load_global() -> Config {
 
 /// Merge global (user-level) and local (project-level) configs.
 /// Local overrides global for project settings; global provides
-/// user-level defaults (status bar).
+/// user-level defaults (status bar + resize redraw preferences).
 pub fn merge_with_global(global: Config, local: Config) -> Config {
     let mut c = global;
     if !local.command.is_empty() {
@@ -171,18 +173,20 @@ pub fn merge_with_global(global: Config, local: Config) -> Config {
     c.allow_tcp_ports.extend(local.allow_tcp_ports);
     c.allow_tcp_ports.sort_unstable();
     c.allow_tcp_ports.dedup();
-    // Status bar stays from global — local should not override
+    // Status bar + resize redraw key stay from global — local should
+    // not override user-level preferences.
     c
 }
 
 /// Save project-level config to `.ai-jail` in the current dir.
-/// User-level fields (status bar) are excluded — they belong in
-/// the global `$HOME/.ai-jail`.
+/// User-level fields (status bar + resize redraw key) are excluded —
+/// they belong in the global `$HOME/.ai-jail`.
 pub fn save(config: &Config) {
     let mut local = config.clone();
     // Strip user-level fields from project config
     local.no_status_bar = None;
     local.status_bar_style = None;
+    local.resize_redraw_key = None;
 
     save_to_path(&config_path(), &local);
 }
@@ -437,6 +441,9 @@ pub fn display_status(config: &Config) {
     if config.status_bar_enabled() {
         output::status_header("  Style", config.status_bar_style());
     }
+    if let Some(key) = config.resize_redraw_key.as_deref() {
+        output::status_header("  Resize redraw", key);
+    }
 }
 
 #[cfg(test)]
@@ -572,6 +579,7 @@ another_removed_field = true
         assert_eq!(cfg.lockdown, None);
         assert_eq!(cfg.no_landlock, None);
         assert_eq!(cfg.no_status_bar, None);
+        assert_eq!(cfg.resize_redraw_key, None);
         assert_eq!(cfg.no_seccomp, None);
         assert_eq!(cfg.no_rlimits, None);
         assert!(cfg.allow_tcp_ports.is_empty());
@@ -703,6 +711,7 @@ no_rlimits = false
             no_landlock: Some(false),
             no_status_bar: None,
             status_bar_style: None,
+            resize_redraw_key: Some("ctrl-shift-l".into()),
             no_seccomp: None,
             no_rlimits: None,
             allow_tcp_ports: vec![32000, 8080],
@@ -719,6 +728,7 @@ no_rlimits = false
         assert_eq!(deserialized.no_mise, config.no_mise);
         assert_eq!(deserialized.lockdown, config.lockdown);
         assert_eq!(deserialized.no_landlock, config.no_landlock);
+        assert_eq!(deserialized.resize_redraw_key, config.resize_redraw_key);
         assert_eq!(deserialized.no_seccomp, config.no_seccomp);
         assert_eq!(deserialized.no_rlimits, config.no_rlimits);
         assert_eq!(deserialized.allow_tcp_ports, config.allow_tcp_ports);
@@ -1291,16 +1301,19 @@ allow_tcp_ports = [32000, 8080]
         let global = Config {
             no_status_bar: Some(false),
             status_bar_style: Some("light".into()),
+            resize_redraw_key: Some("ctrl-l".into()),
             ..Config::default()
         };
         let local = Config {
             no_status_bar: Some(true),
             status_bar_style: Some("dark".into()),
+            resize_redraw_key: Some("disabled".into()),
             ..Config::default()
         };
         let merged = merge_with_global(global, local);
         assert_eq!(merged.no_status_bar, Some(false));
         assert_eq!(merged.status_bar_style.as_deref(), Some("light"));
+        assert_eq!(merged.resize_redraw_key.as_deref(), Some("ctrl-l"));
     }
 
     #[test]
@@ -1327,6 +1340,7 @@ allow_tcp_ports = [32000, 8080]
             no_landlock: None,
             no_status_bar: None,
             status_bar_style: None,
+            resize_redraw_key: Some("ctrl-shift-l".into()),
             no_seccomp: None,
             no_rlimits: None,
             allow_tcp_ports: vec![32000],
@@ -1339,6 +1353,7 @@ allow_tcp_ports = [32000, 8080]
         assert_eq!(loaded.no_gpu, Some(true));
         assert_eq!(loaded.lockdown, Some(false));
         assert_eq!(loaded.allow_tcp_ports, vec![32000]);
+        assert_eq!(loaded.resize_redraw_key, None);
 
         // Cleanup
         std::env::set_current_dir(&original_dir).unwrap();

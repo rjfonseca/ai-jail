@@ -20,6 +20,7 @@ use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
 use nix::sys::termios::{self, SetArg, Termios};
 use std::os::unix::io::{AsRawFd, BorrowedFd, OwnedFd};
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use std::time::{Duration, Instant};
 
 /// Stored master raw FD for async-signal-safe resize from SIGWINCH.
 static MASTER_FD: AtomicI32 = AtomicI32::new(-1);
@@ -27,6 +28,7 @@ static MASTER_FD: AtomicI32 = AtomicI32::new(-1);
 /// Set by signal handler; IO loop clears screen + redraws status bar
 /// BEFORE forwarding SIGWINCH to the child, preventing ghost bars.
 static SIGWINCH_PENDING: AtomicBool = AtomicBool::new(false);
+const RESIZE_REDRAW_DELAY: Duration = Duration::from_millis(75);
 
 /// Mark a SIGWINCH as pending. Called from the signal handler.
 pub fn set_sigwinch_pending() {
@@ -126,7 +128,59 @@ fn set_scroll_region(fd: i32, content_rows: u16) {
     write_all_raw(fd, seq.as_bytes());
 }
 
-fn io_loop(master: &OwnedFd, init_rows: u16, init_cols: u16) {
+pub fn parse_resize_redraw_key(spec: &str) -> Result<Option<Vec<u8>>, String> {
+    let normalized = spec
+        .trim()
+        .to_ascii_lowercase()
+        .replace(['_', '+', ' '], "-");
+    if normalized.is_empty()
+        || matches!(normalized.as_str(), "off" | "none" | "disabled")
+    {
+        return Ok(None);
+    }
+
+    let parts: Vec<&str> =
+        normalized.split('-').filter(|p| !p.is_empty()).collect();
+    if parts.len() < 2 {
+        return Err("expected values like ctrl-l or disabled".into());
+    }
+
+    let mut has_ctrl = false;
+    let mut has_shift = false;
+    let mut key = None;
+    for part in parts {
+        match part {
+            "ctrl" | "control" => has_ctrl = true,
+            "shift" => has_shift = true,
+            k if k.len() == 1 && k.as_bytes()[0].is_ascii_alphabetic() => {
+                key = Some(k.as_bytes()[0].to_ascii_uppercase());
+            }
+            other => {
+                return Err(format!("unsupported modifier or key {other:?}"));
+            }
+        }
+    }
+
+    if !has_ctrl {
+        return Err("only ctrl-based redraw keys are supported".into());
+    }
+    let Some(key) = key else {
+        return Err("missing final letter key".into());
+    };
+    if has_shift {
+        // Shift is accepted for config ergonomics, but terminals
+        // collapse Ctrl+Shift+<letter> to the same control byte as
+        // Ctrl+<letter>, so both spellings send the same sequence.
+    }
+    Ok(Some(vec![key & 0x1f]))
+}
+
+fn io_loop(
+    master: &OwnedFd,
+    init_rows: u16,
+    init_cols: u16,
+    resize_redraw_key: Option<&[u8]>,
+) {
     let stdin_fd = std::io::stdin().as_raw_fd();
     let master_raw = master.as_raw_fd();
     let stdin_bfd = unsafe { BorrowedFd::borrow_raw(stdin_fd) };
@@ -144,6 +198,7 @@ fn io_loop(master: &OwnedFd, init_rows: u16, init_cols: u16) {
     let mut parser = vt100::Parser::new(content_rows, content_cols, 0);
     let mut prev_screen = parser.screen().clone();
     let mut pending_redraw = false;
+    let mut pending_resize_redraw_at: Option<Instant> = None;
     let mut was_alt_screen = false;
     crate::statusbar::update_terminal_state(parser.screen());
 
@@ -177,15 +232,14 @@ fn io_loop(master: &OwnedFd, init_rows: u16, init_cols: u16) {
                 // Reset scroll region and clear screen
                 write_all_raw(stdout, b"\x1b[r\x1b[H\x1b[J");
 
-                if on_alt {
-                    // Alt screen: re-render from vt100 state
-                    // (child will overwrite with its own redraw)
-                    let output = screen.state_formatted();
-                    write_all_raw(stdout, &output);
-                } else {
-                    // Primary screen: just set scroll region
-                    // and let the child redraw at the new size.
-                    // Don't re-render stale vt100 content.
+                // Repaint the visible content from the vt100 model on
+                // every resize. In the primary screen, many CLIs and
+                // shells do not proactively redraw after SIGWINCH, so
+                // clearing the terminal and waiting for new output
+                // leaves blank holes until more text arrives.
+                let output = screen.state_formatted();
+                write_all_raw(stdout, &output);
+                if !on_alt {
                     set_scroll_region(stdout, content_rows);
                 }
 
@@ -197,6 +251,12 @@ fn io_loop(master: &OwnedFd, init_rows: u16, init_cols: u16) {
                 crate::statusbar::redraw();
                 resize_pty();
                 forward_sigwinch();
+                if !on_alt && resize_redraw_key.is_some() {
+                    // Let the child process SIGWINCH first, then nudge
+                    // it to repaint once the terminal has gone quiet.
+                    pending_resize_redraw_at =
+                        Some(Instant::now() + RESIZE_REDRAW_DELAY);
+                }
 
                 let _ = crate::statusbar::take_requests();
                 pending_redraw = false;
@@ -217,6 +277,14 @@ fn io_loop(master: &OwnedFd, init_rows: u16, init_cols: u16) {
                 if pending_redraw {
                     crate::statusbar::redraw();
                     pending_redraw = false;
+                }
+                if let Some(deadline) = pending_resize_redraw_at {
+                    if Instant::now() >= deadline {
+                        if let Some(key) = resize_redraw_key {
+                            write_all_raw(master_raw, key);
+                        }
+                        pending_resize_redraw_at = None;
+                    }
                 }
                 continue;
             }
@@ -295,6 +363,12 @@ fn io_loop(master: &OwnedFd, init_rows: u16, init_cols: u16) {
                         prev_screen = screen.clone();
                         crate::statusbar::update_terminal_state(screen);
                         pending_redraw = true;
+                        if resize_redraw_key.is_some()
+                            && pending_resize_redraw_at.is_some()
+                        {
+                            pending_resize_redraw_at =
+                                Some(Instant::now() + RESIZE_REDRAW_DELAY);
+                        }
                     }
                     Err(nix::errno::Errno::EINTR) => {}
                     Err(nix::errno::Errno::EIO) => break,
@@ -330,6 +404,19 @@ fn io_loop(master: &OwnedFd, init_rows: u16, init_cols: u16) {
         {
             crate::statusbar::redraw();
             pending_redraw = false;
+        }
+        if !matches!(
+            fds[1].revents(),
+            Some(r) if r.contains(PollFlags::POLLIN)
+        ) {
+            if let Some(deadline) = pending_resize_redraw_at {
+                if Instant::now() >= deadline {
+                    if let Some(key) = resize_redraw_key {
+                        write_all_raw(master_raw, key);
+                    }
+                    pending_resize_redraw_at = None;
+                }
+            }
         }
 
         // Check stdin (user input) — forward directly to PTY
@@ -478,7 +565,10 @@ fn write_all_raw(fd: i32, data: &[u8]) {
 /// Creates PTY pair, enters raw mode, spawns child with PTY slave
 /// as stdio, runs IO loop with hybrid rendering, waits for
 /// child, restores terminal. Returns exit code.
-pub fn run(cmd: &mut std::process::Command) -> Result<i32, String> {
+pub fn run(
+    cmd: &mut std::process::Command,
+    resize_redraw_key: Option<&[u8]>,
+) -> Result<i32, String> {
     use std::os::unix::process::CommandExt;
 
     let (rows, cols) = real_term_size().unwrap_or((24, 80));
@@ -548,7 +638,7 @@ pub fn run(cmd: &mut std::process::Command) -> Result<i32, String> {
     drop(slave);
 
     // Run IO loop (blocks until child exits / master HUP)
-    io_loop(&master, rows, cols);
+    io_loop(&master, rows, cols, resize_redraw_key);
 
     // Clean up
     MASTER_FD.store(-1, Ordering::SeqCst);
@@ -608,6 +698,46 @@ mod tests {
         let screen = parser.screen();
         let row0 = screen.rows(0, 100).next().unwrap();
         assert!(row0.starts_with("line1"));
+    }
+
+    #[test]
+    fn vt100_primary_screen_repaint_after_resize_contains_content() {
+        let mut parser = vt100::Parser::new(4, 20, 0);
+        parser.process(b"line1\r\nline2\r\nline3");
+        parser.screen_mut().set_size(6, 30);
+
+        let output = parser.screen().state_formatted();
+
+        assert!(!parser.screen().alternate_screen());
+        assert!(!output.is_empty());
+        assert!(String::from_utf8_lossy(&output).contains("line1"));
+        assert!(String::from_utf8_lossy(&output).contains("line2"));
+    }
+
+    #[test]
+    fn parse_resize_redraw_key_ctrl_l() {
+        assert_eq!(
+            super::parse_resize_redraw_key("ctrl-l").unwrap(),
+            Some(vec![0x0c])
+        );
+    }
+
+    #[test]
+    fn parse_resize_redraw_key_ctrl_shift_l_aliases_ctrl_l() {
+        assert_eq!(
+            super::parse_resize_redraw_key("ctrl-shift-l").unwrap(),
+            Some(vec![0x0c])
+        );
+    }
+
+    #[test]
+    fn parse_resize_redraw_key_disabled() {
+        assert_eq!(super::parse_resize_redraw_key("disabled").unwrap(), None);
+    }
+
+    #[test]
+    fn parse_resize_redraw_key_rejects_unknown() {
+        assert!(super::parse_resize_redraw_key("alt-l").is_err());
     }
 
     #[test]

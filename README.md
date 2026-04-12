@@ -206,6 +206,17 @@ ai-jail -s=light claude    # light theme
 
 The bar shows the project path, running command, ai-jail version, and a green `↑` when an update is available. It uses a PTY proxy to keep the bar visible even when the child application resets the screen. The preference is stored in `$HOME/.ai-jail` and persists across sessions.
 
+When running `codex` through the PTY proxy, ai-jail also injects a redraw key on terminal resize to force the app to repaint at the new width. The default is `ctrl-shift-l` for codex sessions. In practice, terminals collapse shifted control letters, so `ctrl-shift-l` and `ctrl-l` send the same control byte to the app.
+
+Override or disable that global behavior in `$HOME/.ai-jail`:
+
+```toml
+status_bar_style = "pastel"
+resize_redraw_key = "ctrl-l"
+# or:
+# resize_redraw_key = "disabled"
+```
+
 ### mise integration
 
 If [mise](https://mise.jdx.dev/) is found on `$PATH`, the sandbox automatically runs `mise trust && mise activate bash && mise env` before your command. This gives AI tools access to project-specific language versions. Disable with `--no-mise`.
@@ -328,7 +339,7 @@ When CLI flags and an existing config are both present:
 | `no_rlimits` | bool | not set (auto) | `true` disables resource limits |
 | `lockdown` | bool | not set (disabled) | `true` enables strict read-only lockdown mode |
 
-Status bar preferences (`no_status_bar`, `status_bar_style`) are stored in `$HOME/.ai-jail` (global user config), not in per-project `.ai-jail` files. `status_bar_style` accepts `"dark"`, `"light"`, or `"pastel"` — pastel rotates through a curated set of soft pastel palettes (with high-contrast foreground), picking a new one at random for each session. Set it back to `"dark"` or `"light"` to disable the rotation.
+Status bar preferences (`no_status_bar`, `status_bar_style`, `resize_redraw_key`) are stored in `$HOME/.ai-jail` (global user config), not in per-project `.ai-jail` files. `status_bar_style` accepts `"dark"`, `"light"`, or `"pastel"` — pastel rotates through a curated set of soft pastel palettes (with high-contrast foreground), picking a new one at random for each session. Set it back to `"dark"` or `"light"` to disable the rotation. `resize_redraw_key` is used only by the PTY/status-bar path on terminal resize; accepted values are `ctrl-l`, `ctrl-shift-l` (same wire encoding as `ctrl-l`), or `disabled`. If unset, `codex` gets the `ctrl-shift-l` default and other commands stay off.
 
 When a boolean field is not set, the feature is enabled if the resource exists on the host.
 
