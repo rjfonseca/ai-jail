@@ -259,6 +259,8 @@ If no command is given and no `.ai-jail` config exists, defaults to `bash`.
 | `--docker` / `--no-docker` | Enable/disable Docker socket |
 | `--display` / `--no-display` | Enable/disable X11/Wayland |
 | `--mise` / `--no-mise` | Enable/disable mise integration |
+| `--ssh` / `--no-ssh` | Share `~/.ssh` read-only + forward `SSH_AUTH_SOCK` (default: off) |
+| `--pictures` / `--no-pictures` | Share `~/Pictures` read-only (default: off) |
 | `--save-config` / `--no-save-config` | Enable/disable automatic `.ai-jail` writes |
 | `-s`, `--status-bar[=STYLE]` | Enable persistent status line. `STYLE` is `dark` (default), `light`, or `pastel` (random pastel palette per session — use `=dark` / `=light` to switch back) |
 | `--no-status-bar` | Disable persistent status line |
@@ -294,6 +296,12 @@ ai-jail --dry-run --verbose claude
 
 # Create config without running
 ai-jail --init --no-docker claude
+
+# Allow SSH inside the sandbox (agent forwarding + keys read-only)
+ai-jail --ssh claude
+
+# Share ~/Pictures read-only (e.g. for image analysis)
+ai-jail --pictures claude
 
 # Run without creating/updating .ai-jail
 ai-jail --no-save-config claude
@@ -341,6 +349,8 @@ When CLI flags and an existing config are both present:
 | `no_docker` | bool | not set (auto) | `true` disables Docker socket |
 | `no_display` | bool | not set (auto) | `true` disables X11/Wayland |
 | `no_mise` | bool | not set (auto) | `true` disables mise integration |
+| `ssh` | bool | not set (off) | `true` shares `~/.ssh` read-only + forwards `SSH_AUTH_SOCK` |
+| `pictures` | bool | not set (off) | `true` shares `~/Pictures` read-only |
 | `no_save_config` | bool | not set (enabled) | `true` disables automatic `.ai-jail` writes |
 | `no_landlock` | bool | not set (auto) | `true` disables Landlock LSM (Linux only) |
 | `no_seccomp` | bool | not set (auto) | `true` disables seccomp syscall filter (Linux only) |

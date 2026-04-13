@@ -414,7 +414,44 @@ fn collect_normal_paths(
     // .ssh, .gnupg are denied entirely (never bind-mounted by
     // bwrap, so Landlock allowing them is moot — but we still
     // skip them for defense-in-depth). Everything else is ro.
-    collect_home_paths(&home, &config.hide_dotdirs, &mut ro, &mut rw, verbose);
+    let exempt = super::dotdir_exemptions(config);
+    collect_home_paths(
+        &home,
+        &config.hide_dotdirs,
+        &exempt,
+        &mut ro,
+        &mut rw,
+        verbose,
+    );
+
+    // Pictures: read-only when enabled
+    if config.pictures_enabled() {
+        let pics = home.join("Pictures");
+        if pics.is_dir() {
+            if verbose {
+                output::verbose("Landlock: ~/Pictures ro");
+            }
+            ro.push(pics);
+        }
+    }
+
+    // SSH agent socket: read-write when --ssh is enabled
+    if config.ssh_enabled()
+        && let Ok(sock) = std::env::var("SSH_AUTH_SOCK")
+    {
+        let sock_path = PathBuf::from(&sock);
+        if sock_path.exists() {
+            if verbose {
+                output::verbose(&format!(
+                    "Landlock: SSH_AUTH_SOCK {} rw",
+                    sock_path.display()
+                ));
+            }
+            if let Some(parent) = sock_path.parent() {
+                rw.push(parent.to_path_buf());
+            }
+        }
+    }
 
     // $HOME/.local: read-write — mise, pipx, and other tools
     // store binaries and state here.
@@ -541,6 +578,7 @@ fn collect_normal_paths(
 fn collect_home_paths(
     home: &Path,
     hide_dotdirs: &[String],
+    exempt: &[&str],
     ro: &mut Vec<PathBuf>,
     rw: &mut Vec<PathBuf>,
     verbose: bool,
@@ -562,7 +600,7 @@ fn collect_home_paths(
             continue;
         }
 
-        if super::is_dotdir_denied(&name_str, hide_dotdirs) {
+        if super::is_dotdir_denied(&name_str, hide_dotdirs, exempt) {
             continue;
         }
 

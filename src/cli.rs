@@ -25,6 +25,8 @@ OPTIONS:
     --no-docker / --docker         Disable/enable Docker socket passthrough
     --no-display / --display       Disable/enable X11/Wayland passthrough (Linux only)
     --no-mise / --mise             Disable/enable mise integration
+    --ssh / --no-ssh                Share ~/.ssh read-only (default: off)
+    --pictures / --no-pictures     Share ~/Pictures read-only (default: off)
     --save-config / --no-save-config
                                    Enable/disable automatic .ai-jail writes
     -s, --status-bar[=STYLE]       Set status line theme (dark | light | pastel; default dark)
@@ -56,6 +58,8 @@ pub struct CliArgs {
     pub display: Option<bool>,
     pub mise: Option<bool>,
     pub save_config: Option<bool>,
+    pub ssh: Option<bool>,
+    pub pictures: Option<bool>,
     pub status_bar: Option<bool>,
     pub status_bar_style: Option<String>,
     pub allow_tcp_ports: Vec<u16>,
@@ -136,6 +140,10 @@ pub fn parse_from(mut parser: lexopt::Parser) -> Result<CliArgs, String> {
             Long("no-mise") => args.mise = Some(false),
             Long("save-config") => args.save_config = Some(true),
             Long("no-save-config") => args.save_config = Some(false),
+            Long("ssh") => args.ssh = Some(true),
+            Long("no-ssh") => args.ssh = Some(false),
+            Long("pictures") => args.pictures = Some(true),
+            Long("no-pictures") => args.pictures = Some(false),
             Long("status-bar") | Short('s') => {
                 if let Some(val) = parser.optional_value() {
                     let s = val.to_string_lossy();
@@ -348,6 +356,30 @@ mod tests {
     fn parse_mise() {
         let args = parse_test(&["--mise", "bash"]).unwrap();
         assert_eq!(args.mise, Some(true));
+    }
+
+    #[test]
+    fn parse_ssh() {
+        let args = parse_test(&["--ssh", "bash"]).unwrap();
+        assert_eq!(args.ssh, Some(true));
+    }
+
+    #[test]
+    fn parse_no_ssh() {
+        let args = parse_test(&["--no-ssh", "bash"]).unwrap();
+        assert_eq!(args.ssh, Some(false));
+    }
+
+    #[test]
+    fn parse_pictures() {
+        let args = parse_test(&["--pictures", "bash"]).unwrap();
+        assert_eq!(args.pictures, Some(true));
+    }
+
+    #[test]
+    fn parse_no_pictures() {
+        let args = parse_test(&["--no-pictures", "bash"]).unwrap();
+        assert_eq!(args.pictures, Some(false));
     }
 
     #[test]

@@ -41,9 +41,17 @@ fn is_dotdir_rw(name: &str) -> bool {
 /// Checks both built-in DOTDIR_DENY and user-specified extras.
 /// `name` should be the dotdir name with or without leading dot (e.g., ".aws" or "aws").
 /// If user tries to deny a built-in RW directory, warns and returns false.
+/// `exempt` lists dotdir names explicitly allowed by the user (e.g. ".ssh" via --ssh).
 #[allow(dead_code)] // unused on macOS where seatbelt uses denied_dotdirs instead
-pub fn is_dotdir_denied(name: &str, extra: &[String]) -> bool {
+pub fn is_dotdir_denied(name: &str, extra: &[String], exempt: &[&str]) -> bool {
     let normalized = name.strip_prefix('.').unwrap_or(name);
+    // Check exemptions first
+    if exempt
+        .iter()
+        .any(|&e| e.strip_prefix('.').unwrap_or(e) == normalized)
+    {
+        return false;
+    }
     // Check built-in list
     if DOTDIR_DENY
         .iter()
@@ -68,9 +76,13 @@ pub fn is_dotdir_denied(name: &str, extra: &[String]) -> bool {
 }
 
 /// Returns an iterator over all denied dotdir names (without leading dot).
-/// Includes both built-in DOTDIR_DENY and user-specified extras.
+/// Includes both built-in DOTDIR_DENY and user-specified extras,
+/// minus any names in `exempt`.
 #[allow(dead_code)] // unused on Linux where bwrap/landlock use is_dotdir_denied instead
-pub fn denied_dotdirs(extra: &[String]) -> impl Iterator<Item = String> + '_ {
+pub fn denied_dotdirs<'a>(
+    extra: &'a [String],
+    exempt: &'a [&'a str],
+) -> impl Iterator<Item = String> + 'a {
     DOTDIR_DENY
         .iter()
         .map(|s| s.strip_prefix('.').unwrap_or(s).to_string())
@@ -79,6 +91,11 @@ pub fn denied_dotdirs(extra: &[String]) -> impl Iterator<Item = String> + '_ {
                 .iter()
                 .map(|s| s.strip_prefix('.').unwrap_or(s).to_string()),
         )
+        .filter(move |name| {
+            !exempt
+                .iter()
+                .any(|&e| e.strip_prefix('.').unwrap_or(e) == name)
+        })
 }
 
 // Dotdirs requiring read-write access
@@ -112,6 +129,16 @@ const DOTDIR_RW: &[&str] = &[
 pub struct LaunchCommand {
     pub program: String,
     pub args: Vec<String>,
+}
+
+/// Build the list of dotdir names exempted from the deny list by
+/// explicit user flags (e.g. --ssh exempts ".ssh").
+pub fn dotdir_exemptions(config: &Config) -> Vec<&'static str> {
+    let mut exempt = Vec::new();
+    if config.ssh_enabled() {
+        exempt.push(".ssh");
+    }
+    exempt
 }
 
 fn home_dir() -> PathBuf {
@@ -397,40 +424,48 @@ mod tests {
 
     #[test]
     fn is_dotdir_denied_builtin() {
-        assert!(is_dotdir_denied(".gnupg", &[]));
-        assert!(is_dotdir_denied("gnupg", &[])); // Without dot
-        assert!(is_dotdir_denied(".aws", &[]));
-        assert!(is_dotdir_denied(".ssh", &[]));
-        assert!(is_dotdir_denied(".mozilla", &[]));
-        assert!(is_dotdir_denied(".basilisk-dev", &[]));
-        assert!(is_dotdir_denied(".sparrow", &[]));
+        assert!(is_dotdir_denied(".gnupg", &[], &[]));
+        assert!(is_dotdir_denied("gnupg", &[], &[])); // Without dot
+        assert!(is_dotdir_denied(".aws", &[], &[]));
+        assert!(is_dotdir_denied(".ssh", &[], &[]));
+        assert!(is_dotdir_denied(".mozilla", &[], &[]));
+        assert!(is_dotdir_denied(".basilisk-dev", &[], &[]));
+        assert!(is_dotdir_denied(".sparrow", &[], &[]));
     }
 
     #[test]
     fn is_dotdir_denied_extra() {
         let extra = vec![".my_secrets".into(), ".proton".into()];
-        assert!(is_dotdir_denied(".my_secrets", &extra));
-        assert!(is_dotdir_denied("my_secrets", &extra)); // Without dot
-        assert!(is_dotdir_denied(".proton", &extra));
-        assert!(is_dotdir_denied("proton", &extra));
+        assert!(is_dotdir_denied(".my_secrets", &extra, &[]));
+        assert!(is_dotdir_denied("my_secrets", &extra, &[])); // Without dot
+        assert!(is_dotdir_denied(".proton", &extra, &[]));
+        assert!(is_dotdir_denied("proton", &extra, &[]));
     }
 
     #[test]
     fn is_dotdir_denied_not_in_list() {
-        assert!(!is_dotdir_denied(".cargo", &[]));
-        assert!(!is_dotdir_denied(".config", &[]));
-        assert!(!is_dotdir_denied(".my_custom", &[]));
+        assert!(!is_dotdir_denied(".cargo", &[], &[]));
+        assert!(!is_dotdir_denied(".config", &[], &[]));
+        assert!(!is_dotdir_denied(".my_custom", &[], &[]));
     }
 
     #[test]
     fn is_dotdir_denied_combined() {
         let extra = vec![".my_secrets".into()];
         // Built-in
-        assert!(is_dotdir_denied(".aws", &extra));
+        assert!(is_dotdir_denied(".aws", &extra, &[]));
         // Extra
-        assert!(is_dotdir_denied(".my_secrets", &extra));
+        assert!(is_dotdir_denied(".my_secrets", &extra, &[]));
         // Not denied
-        assert!(!is_dotdir_denied(".cargo", &extra));
+        assert!(!is_dotdir_denied(".cargo", &extra, &[]));
+    }
+
+    #[test]
+    fn ssh_exempt_removes_from_deny() {
+        assert!(is_dotdir_denied(".ssh", &[], &[]));
+        assert!(!is_dotdir_denied(".ssh", &[], &[".ssh"]));
+        // Other denied dirs unaffected
+        assert!(is_dotdir_denied(".gnupg", &[], &[".ssh"]));
     }
 
     #[test]
@@ -438,7 +473,7 @@ mod tests {
         for name in &[".cargo", ".cache", ".config", ".claude"] {
             let extra = vec![name.to_string()];
             assert!(
-                !is_dotdir_denied(name, &extra),
+                !is_dotdir_denied(name, &extra, &[]),
                 "{name} should not be deniable - it's RW-required"
             );
         }
@@ -457,7 +492,7 @@ mod tests {
     #[test]
     fn denied_dotdirs_iter() {
         let extra: Vec<String> = vec![".my_secrets".into(), ".proton".into()];
-        let denied: Vec<String> = denied_dotdirs(&extra).collect();
+        let denied: Vec<String> = denied_dotdirs(&extra, &[]).collect();
         assert!(denied.contains(&"gnupg".to_string()));
         assert!(denied.contains(&"aws".to_string()));
         assert!(denied.contains(&"my_secrets".to_string()));

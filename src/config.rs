@@ -28,6 +28,10 @@ pub struct Config {
     #[serde(default)]
     pub no_save_config: Option<bool>,
     #[serde(default)]
+    pub ssh: Option<bool>,
+    #[serde(default)]
+    pub pictures: Option<bool>,
+    #[serde(default)]
     pub lockdown: Option<bool>,
     #[serde(default)]
     pub no_landlock: Option<bool>,
@@ -63,6 +67,12 @@ impl Config {
     }
     pub fn save_config_enabled(&self) -> bool {
         self.no_save_config != Some(true)
+    }
+    pub fn ssh_enabled(&self) -> bool {
+        self.ssh == Some(true)
+    }
+    pub fn pictures_enabled(&self) -> bool {
+        self.pictures == Some(true)
     }
     pub fn landlock_enabled(&self) -> bool {
         self.no_landlock != Some(true)
@@ -165,6 +175,12 @@ pub fn merge_with_global(global: Config, local: Config) -> Config {
     }
     if local.no_save_config.is_some() {
         c.no_save_config = local.no_save_config;
+    }
+    if local.ssh.is_some() {
+        c.ssh = local.ssh;
+    }
+    if local.pictures.is_some() {
+        c.pictures = local.pictures;
     }
     if local.lockdown.is_some() {
         c.lockdown = local.lockdown;
@@ -342,6 +358,12 @@ pub fn merge(cli: &CliArgs, existing: Config) -> Config {
     if let Some(v) = cli.save_config {
         config.no_save_config = Some(!v);
     }
+    if let Some(v) = cli.ssh {
+        config.ssh = Some(v);
+    }
+    if let Some(v) = cli.pictures {
+        config.pictures = Some(v);
+    }
     if let Some(v) = cli.lockdown {
         config.lockdown = Some(v);
     }
@@ -428,6 +450,14 @@ pub fn display_status(config: &Config) {
         Some(true) => output::status_header("  Save config", "disabled"),
         Some(false) => output::status_header("  Save config", "enabled"),
         None => output::status_header("  Save config", "enabled (default)"),
+    }
+    match config.ssh {
+        Some(true) => output::status_header("  SSH keys", "shared (read-only)"),
+        _ => output::status_header("  SSH keys", "hidden"),
+    }
+    match config.pictures {
+        Some(true) => output::status_header("  Pictures", "shared (read-only)"),
+        _ => output::status_header("  Pictures", "hidden"),
     }
     bool_opt("Landlock", config.no_landlock);
     bool_opt("Seccomp", config.no_seccomp);
@@ -740,6 +770,8 @@ no_rlimits = false
             no_display: Some(false),
             no_mise: None,
             no_save_config: Some(true),
+            ssh: Some(true),
+            pictures: None,
             lockdown: Some(true),
             no_landlock: Some(false),
             no_status_bar: None,
@@ -1456,6 +1488,8 @@ allow_tcp_ports = [32000, 8080]
             no_display: None,
             no_mise: None,
             no_save_config: Some(true),
+            ssh: None,
+            pictures: Some(true),
             lockdown: Some(false),
             no_landlock: None,
             no_status_bar: None,

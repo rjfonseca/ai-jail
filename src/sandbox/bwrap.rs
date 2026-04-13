@@ -75,12 +75,15 @@ struct MountSet {
     shm: Vec<Mount>,
     display: Vec<Mount>,
     display_env: Vec<(String, String)>,
+    ssh_agent: Vec<Mount>,
+    ssh_env: Vec<(String, String)>,
+    pictures: Vec<Mount>,
     extra: Vec<Mount>,
     project: Vec<Mount>,
 }
 
 impl MountSet {
-    fn ordered_mounts(&self) -> [&[Mount]; 12] {
+    fn ordered_mounts(&self) -> [&[Mount]; 14] {
         [
             &self.base,
             &self.sys_masks,
@@ -92,6 +95,8 @@ impl MountSet {
             &self.config_hide,
             &self.cache_hide,
             &self.local_overrides,
+            &self.ssh_agent,
+            &self.pictures,
             &self.extra,
             &self.project,
         ]
@@ -157,6 +162,15 @@ impl MountSet {
             }
         } else {
             for (key, val) in &self.display_env {
+                args.push("--setenv".into());
+                args.push(key.clone());
+                args.push(val.clone());
+            }
+        }
+
+        // SSH agent env (non-lockdown only — lockdown clears env)
+        if !lockdown {
+            for (key, val) in &self.ssh_env {
                 args.push("--setenv".into());
                 args.push(key.clone());
                 args.push(val.clone());
@@ -519,6 +533,12 @@ fn landlock_wrapper_args(config: &Config, verbose: bool) -> Vec<String> {
     } else {
         "--no-display".into()
     });
+    if config.ssh_enabled() {
+        args.push("--ssh".into());
+    }
+    if config.pictures_enabled() {
+        args.push("--pictures".into());
+    }
 
     for port in config.allow_tcp_ports() {
         args.push("--allow-tcp-port".into());
@@ -749,11 +769,56 @@ fn discover_mounts(
     let enable_gpu = !lockdown && config.gpu_enabled();
     let enable_docker = !lockdown && config.docker_enabled();
     let enable_display = !lockdown && config.display_enabled();
+    let exempt = super::dotdir_exemptions(config);
 
     let (display_mounts, display_env) = if enable_display {
         discover_display(verbose)
     } else {
         (vec![], vec![])
+    };
+
+    // SSH: agent socket + tmpfs over /etc/ssh/ssh_config.d to
+    // prevent "bad owner or permissions" errors (bwrap's user
+    // namespace remaps root-owned config files to nobody).
+    let (ssh_agent_mount, ssh_env) = if !lockdown && config.ssh_enabled() {
+        let mut mounts = vec![Mount::Tmpfs {
+            dest: "/etc/ssh/ssh_config.d".into(),
+        }];
+        let mut env = vec![];
+        if let Ok(sock) = std::env::var("SSH_AUTH_SOCK") {
+            let sock_path = PathBuf::from(&sock);
+            if sock_path.exists() {
+                if verbose {
+                    output::verbose(&format!(
+                        "SSH agent: {}",
+                        sock_path.display()
+                    ));
+                }
+                mounts.push(Mount::Bind {
+                    src: sock_path.clone(),
+                    dest: sock_path,
+                });
+                env.push(("SSH_AUTH_SOCK".into(), sock));
+            }
+        }
+        (mounts, env)
+    } else {
+        (vec![], vec![])
+    };
+
+    // Pictures: read-only bind of $HOME/Pictures when enabled
+    let pictures_mount = if !lockdown && config.pictures_enabled() {
+        let p = super::home_dir().join("Pictures");
+        if p.is_dir() {
+            vec![Mount::RoBind {
+                src: p.clone(),
+                dest: p,
+            }]
+        } else {
+            vec![]
+        }
+    } else {
+        vec![]
     };
 
     MountSet {
@@ -762,6 +827,7 @@ fn discover_mounts(
         home_dotfiles: discover_home_dotfiles(
             lockdown,
             &config.hide_dotdirs,
+            &exempt,
             verbose,
         ),
         config_hide: if lockdown {
@@ -792,6 +858,9 @@ fn discover_mounts(
         shm: if lockdown { vec![] } else { discover_shm() },
         display: display_mounts,
         display_env,
+        ssh_agent: ssh_agent_mount,
+        ssh_env,
+        pictures: pictures_mount,
         extra: if lockdown {
             vec![]
         } else {
@@ -883,6 +952,7 @@ fn discover_base(
 fn discover_home_dotfiles(
     lockdown: bool,
     hide_dotdirs: &[String],
+    exempt: &[&str],
     verbose: bool,
 ) -> Vec<Mount> {
     let home = super::home_dir();
@@ -912,7 +982,7 @@ fn discover_home_dotfiles(
             continue;
         }
 
-        if super::is_dotdir_denied(&name_str, hide_dotdirs) {
+        if super::is_dotdir_denied(&name_str, hide_dotdirs, exempt) {
             if verbose {
                 output::verbose(&format!("deny: {}", path.display()));
             }
@@ -1400,7 +1470,7 @@ mod tests {
 
     #[test]
     fn lockdown_skips_host_home_dotfiles() {
-        let mounts = discover_home_dotfiles(true, &[], false);
+        let mounts = discover_home_dotfiles(true, &[], &[], false);
         assert_eq!(mounts.len(), 1, "lockdown should only mount tmpfs home");
         match &mounts[0] {
             Mount::Tmpfs { .. } => {}

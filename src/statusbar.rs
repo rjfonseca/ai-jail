@@ -13,6 +13,10 @@ static ACTIVE: AtomicBool = AtomicBool::new(false);
 static STYLE_DARK: AtomicBool = AtomicBool::new(true);
 static STYLE_PASTEL: AtomicBool = AtomicBool::new(false);
 static DIRTY: AtomicBool = AtomicBool::new(false);
+static HAS_SSH: AtomicBool = AtomicBool::new(false);
+static HAS_PICTURES: AtomicBool = AtomicBool::new(false);
+static RO_MAP_COUNT: AtomicUsize = AtomicUsize::new(0);
+static RW_MAP_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 // SGR sequence for the active pastel palette, picked at setup().
 // Form: "\x1b[38;5;{fg};48;5;{bg}m" — at most ~20 bytes.
@@ -58,10 +62,6 @@ static ATTR_STATE_LEN: AtomicUsize = AtomicUsize::new(0);
 const ELLIPSIS: [u8; 3] = [0xe2, 0x80, 0xa6];
 // U+2191 UPWARDS ARROW: 3 UTF-8 bytes, 1 visible column
 const UP_ARROW: [u8; 3] = [0xe2, 0x86, 0x91];
-// U+26BF SQUARED KEY: 3 UTF-8 bytes, East Asian Width "Ambiguous"
-// Renders as 2 columns on macOS terminals; counted as 2 here.
-const JAIL_ICON: [u8; 3] = [0xe2, 0x9a, 0xbf];
-const JAIL_ICON_COLS: usize = 2;
 
 fn term_size() -> Option<(u16, u16)> {
     let mut ws = unsafe { std::mem::zeroed::<nix::libc::winsize>() };
@@ -83,11 +83,13 @@ fn term_size() -> Option<(u16, u16)> {
 /// into PASTEL_SGR_BUF. Called once per session from setup(), so the
 /// color stays stable for the whole run but rotates between sessions.
 fn pick_pastel_palette() {
-    let nanos = std::time::SystemTime::now()
+    let dur = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.subsec_nanos() as usize)
-        .unwrap_or(0);
-    let (bg, fg) = PASTEL_PALETTE[nanos % PASTEL_PALETTE.len()];
+        .unwrap_or(std::time::Duration::ZERO);
+    // Mix seconds and nanos so palette choice varies even when
+    // subsec_nanos lands in the same range across launches.
+    let seed = dur.as_secs() as usize ^ dur.subsec_nanos() as usize;
+    let (bg, fg) = PASTEL_PALETTE[seed % PASTEL_PALETTE.len()];
 
     // Format: "\x1b[38;5;{fg};48;5;{bg}m"
     let mut buf = [0u8; MAX_PASTEL_SGR];
@@ -193,7 +195,12 @@ pub fn update_terminal_state(screen: &vt100::Screen) {
 
 /// Set up the status bar. Call before spawning the child.
 /// `style` must be `"dark"`, `"light"`, or `"pastel"`.
-pub fn setup(project_dir: &std::path::Path, command: &[String], style: &str) {
+pub fn setup(
+    project_dir: &std::path::Path,
+    command: &[String],
+    style: &str,
+    config: &crate::config::Config,
+) {
     use std::os::unix::ffi::OsStrExt;
 
     STYLE_DARK.store(style == "dark", Ordering::SeqCst);
@@ -230,6 +237,11 @@ pub fn setup(project_dir: &std::path::Path, command: &[String], style: &str) {
         cmd_pos += n;
     }
     CMD_LEN.store(cmd_pos, Ordering::SeqCst);
+
+    HAS_SSH.store(config.ssh_enabled(), Ordering::SeqCst);
+    HAS_PICTURES.store(config.pictures_enabled(), Ordering::SeqCst);
+    RO_MAP_COUNT.store(config.ro_maps.len(), Ordering::SeqCst);
+    RW_MAP_COUNT.store(config.rw_maps.len(), Ordering::SeqCst);
 
     store_terminal_state(b"\x1b[1;1H", b"\x1b[0m");
 
@@ -377,11 +389,67 @@ fn draw(rows: u16, cols: u16) {
     // Status-bar background style (dark / light / pastel).
     put!(style_seq);
 
+    // Build indicator badges: 🔑 (ssh), 🖼 (pictures), ro:N, rw:N
+    let ssh = HAS_SSH.load(Ordering::SeqCst);
+    let pics = HAS_PICTURES.load(Ordering::SeqCst);
+    let ro_n = RO_MAP_COUNT.load(Ordering::SeqCst);
+    let rw_n = RW_MAP_COUNT.load(Ordering::SeqCst);
+
+    // Pre-format indicators into a small buffer.
+    // Items separated by "|", with " " padding around the group.
+    let mut ind_buf = [0u8; 96];
+    let mut ind_len: usize = 0;
+    let mut ind_vis: usize = 0;
+    let mut ind_count: usize = 0;
+    macro_rules! ind {
+        ($b:expr, $cols:expr) => {{
+            if ind_count > 0 {
+                let sep = b"|";
+                ind_buf[ind_len] = sep[0];
+                ind_len += 1;
+                ind_vis += 1;
+            }
+            let b: &[u8] = $b;
+            let n = b.len().min(ind_buf.len() - ind_len);
+            ind_buf[ind_len..ind_len + n].copy_from_slice(&b[..n]);
+            ind_len += n;
+            ind_vis += $cols;
+            ind_count += 1;
+        }};
+    }
+    // U+1F511 KEY: 4 UTF-8 bytes, typically 2 columns
+    if ssh {
+        ind!(b"\xf0\x9f\x94\x91", 2); // "🔑"
+    }
+    // U+1F5BC FRAME WITH PICTURE: 4 UTF-8 bytes, typically 2 columns
+    if pics {
+        ind!(b"\xf0\x9f\x96\xbc", 2); // "🖼"
+    }
+    if ro_n > 0 {
+        ind!(b"ro:", 3);
+        ind_vis += {
+            let w = write_u16(ro_n as u16, &mut ind_buf[ind_len..]);
+            ind_len += w;
+            w
+        };
+    }
+    if rw_n > 0 {
+        ind!(b"rw:", 3);
+        ind_vis += {
+            let w = write_u16(rw_n as u16, &mut ind_buf[ind_len..]);
+            ind_len += w;
+            w
+        };
+    }
+    // Wrap the indicator group with spaces: " indicators "
+    if ind_count > 0 {
+        ind_vis += 2; // leading + trailing space
+    }
+
     // 5. Compute layout widths
     let ver = VERSION.as_bytes();
-    // "ai-jail " (8) + ⚿ (JAIL_ICON_COLS) + " " (1) + VERSION + optional " ↑" (2)
-    let right_vis =
-        8 + JAIL_ICON_COLS + 1 + ver.len() + if has_update { 2 } else { 0 };
+    // "ai-jail " (8) + VERSION + optional " ↑" (2) + indicators
+    let right_vis = 8 + ver.len() + if has_update { 2 } else { 0 } + ind_vis;
     let show_right = usable_cols >= right_vis + 2;
     let eff_right = if show_right { right_vis } else { 0 };
 
@@ -487,11 +555,15 @@ fn draw(rows: u16, cols: u16) {
 
     // --- Right section ---
     if show_right {
+        if ind_len > 0 {
+            put!(b" ");
+            put!(&ind_buf[..ind_len]);
+            put!(b" ");
+            vis += ind_vis;
+        }
         put!(b"ai-jail ");
-        put!(&JAIL_ICON);
-        put!(b" ");
         put!(ver);
-        vis += 8 + JAIL_ICON_COLS + 1 + ver.len();
+        vis += 8 + ver.len();
 
         if has_update {
             put!(b" \x1b[32m"); // space + green

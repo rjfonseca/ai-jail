@@ -203,6 +203,7 @@ fn run() -> Result<i32, String> {
             &project_dir,
             &config.command,
             config.status_bar_style(),
+            &config,
         );
         statusbar::check_update_background();
     }
