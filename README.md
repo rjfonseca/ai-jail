@@ -88,6 +88,18 @@ The default mode favors usability over maximum lockdown. These are intentionally
 2. Display passthrough mounts `XDG_RUNTIME_DIR` on Linux, which can expose host IPC sockets.
 3. Environment variables are inherited (tokens/secrets in your shell env are visible in-jail).
 
+**Hiding project-level secrets**: the project directory is mounted in its entirety, so files like `.env`, `credentials.json`, or `secrets.yml` are visible to whatever runs inside. Use `--mask PATH` to replace them with empty files inside the sandbox. Example:
+
+```bash
+ai-jail --mask .env --mask .env.local claude
+```
+
+Or persist the list in `.ai-jail`:
+
+```toml
+mask = [".env", ".env.local", "credentials.json"]
+```
+
 ### Defense-in-depth layers (Linux)
 
 ai-jail applies multiple overlapping security layers:
@@ -208,6 +220,16 @@ ai-jail -s=light claude    # light theme
 
 The bar shows the project path, running command, ai-jail version, and a green `↑` when an update is available. It uses a PTY proxy to keep the bar visible even when the child application resets the screen. The preference is stored in `$HOME/.ai-jail` and persists across sessions.
 
+**Why it exists**: when you run several AI CLI agents in parallel (one per terminal window / split), it's easy to lose track of which window is bound to which project. The status bar keeps the project path and the running command visible at all times so you can't accidentally paste the wrong context into the wrong agent.
+
+**Disable it if you use tmux, zellij, or a similar multiplexer.** Those tools already render a persistent status line and already own the terminal; ai-jail's PTY proxy is redundant and causes conflicts (nested PTYs, resize flicker, lost keyboard-protocol sequences, no Secure Input propagation). Turn ai-jail's bar off and let the multiplexer handle it:
+
+```bash
+ai-jail --no-status-bar claude
+# or permanently in ~/.ai-jail:
+#   no_status_bar = true
+```
+
 When running `codex` through the PTY proxy, ai-jail also injects a redraw key on terminal resize to force the app to repaint at the new width. The default is `ctrl-shift-l` for codex sessions. In practice, terminals collapse shifted control letters, so `ctrl-shift-l` and `ctrl-l` send the same control byte to the app.
 
 Override or disable that global behavior in `$HOME/.ai-jail`:
@@ -250,6 +272,7 @@ If no command is given and no `.ai-jail` config exists, defaults to `bash`.
 | `--rw-map <PATH>` | Mount PATH read-write (repeatable) |
 | `--map <PATH>` | Mount PATH read-only (repeatable) |
 | `--hide-dotdir <NAME>` | Never bind-mount the named home dotdir into the sandbox (e.g. `.my_secrets`). Leading dot is optional. Repeatable. Cannot hide dotdirs required for tool operation (`.cargo`, `.config`, `.cache`, etc.) — those emit a warning and stay visible. |
+| `--mask <PATH>` | Replace `PATH` inside the sandbox with an empty file (or empty tmpfs if the path is a directory). Relative paths resolve against the project directory. Repeatable. Useful for hiding sensitive files like `.env`, `credentials.json` from AI agents while keeping the rest of the project accessible. Missing paths are skipped with a warning. |
 | `--allow-tcp-port <PORT>` | Permit outbound TCP to PORT in lockdown mode (repeatable). Skips `--unshare-net` and uses Landlock V4 `NetPort` rules to deny everything else. Requires Linux ≥ 6.5; hard-fails otherwise. No effect outside lockdown or on macOS. |
 | `--lockdown` / `--no-lockdown` | Enable/disable strict read-only lockdown mode |
 | `--landlock` / `--no-landlock` | Enable/disable Landlock LSM (Linux 5.13+, default: on) |
@@ -303,6 +326,9 @@ ai-jail --ssh claude
 # Share ~/Pictures read-only (e.g. for image analysis)
 ai-jail --pictures claude
 
+# Hide .env and other secrets from the agent
+ai-jail --mask .env --mask .env.local claude
+
 # Run without creating/updating .ai-jail
 ai-jail --no-save-config claude
 
@@ -324,7 +350,9 @@ Created in the project directory on first run. Example:
 command = ["claude"]
 rw_maps = ["/home/user/Projects/shared-lib"]
 ro_maps = []
+mask = [".env", ".env.local"]
 no_gpu = true
+ssh = true
 lockdown = true
 ```
 
@@ -345,6 +373,9 @@ When CLI flags and an existing config are both present:
 | `command` | string array | `["bash"]` | Default command to run inside sandbox. Set by first run or by `--init`; not overwritten when a different command is passed on the CLI. |
 | `rw_maps` | path array | `[]` | Extra read-write mounts |
 | `ro_maps` | path array | `[]` | Extra read-only mounts |
+| `hide_dotdirs` | string array | `[]` | Extra home dotdirs to deny (e.g. `[".my_secrets"]`). Leading dot optional. Built-in deny list (`.ssh`, `.gnupg`, `.aws`, `.mozilla`) always applies. |
+| `mask` | path array | `[]` | Paths to replace with empty files/tmpfs (e.g. `[".env", "secrets.json"]`). Relative paths resolve against the project directory. |
+| `allow_tcp_ports` | u16 array | `[]` | TCP ports permitted outbound in lockdown mode (e.g. `[32000, 8080]`). Requires Linux ≥ 6.5 for Landlock V4. No effect outside lockdown. |
 | `no_gpu` | bool | not set (auto) | `true` disables GPU passthrough |
 | `no_docker` | bool | not set (auto) | `true` disables Docker socket |
 | `no_display` | bool | not set (auto) | `true` disables X11/Wayland |

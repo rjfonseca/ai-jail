@@ -134,7 +134,16 @@ fn generate_sbpl_profile(
     lockdown: bool,
 ) -> String {
     let exempt = super::dotdir_exemptions(config);
-    let deny_paths = macos_read_deny_paths(&config.hide_dotdirs, &exempt);
+    let mut deny_paths = macos_read_deny_paths(&config.hide_dotdirs, &exempt);
+    // Extend deny list with user-specified mask paths
+    for p in &config.mask {
+        let abs = if p.is_absolute() {
+            p.clone()
+        } else {
+            project_dir.join(p)
+        };
+        deny_paths.push(abs);
+    }
     let writable_paths = macos_writable_paths(project_dir, config, lockdown);
 
     let mut profile = String::new();

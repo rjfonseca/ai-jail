@@ -80,10 +80,11 @@ struct MountSet {
     pictures: Vec<Mount>,
     extra: Vec<Mount>,
     project: Vec<Mount>,
+    mask: Vec<Mount>,
 }
 
 impl MountSet {
-    fn ordered_mounts(&self) -> [&[Mount]; 14] {
+    fn ordered_mounts(&self) -> [&[Mount]; 15] {
         [
             &self.base,
             &self.sys_masks,
@@ -99,6 +100,7 @@ impl MountSet {
             &self.pictures,
             &self.extra,
             &self.project,
+            &self.mask,
         ]
     }
 
@@ -198,6 +200,8 @@ pub struct SandboxGuard {
     /// so the symlink inside /etc (from --ro-bind /etc) resolves.
     /// If it's a regular file, this is /etc/resolv.conf itself.
     resolv_dest: Option<PathBuf>,
+    /// Empty tempfile used as the source for --mask file overlays.
+    empty_path: PathBuf,
 }
 
 impl SandboxGuard {
@@ -211,6 +215,10 @@ impl SandboxGuard {
             _ => None,
         }
     }
+
+    fn empty_path(&self) -> &Path {
+        &self.empty_path
+    }
 }
 
 impl Drop for SandboxGuard {
@@ -219,6 +227,7 @@ impl Drop for SandboxGuard {
         if let Some(ref p) = self.resolv_path {
             let _ = std::fs::remove_file(p);
         }
+        let _ = std::fs::remove_file(&self.empty_path);
     }
 }
 
@@ -229,6 +238,7 @@ impl SandboxGuard {
             hosts_path: path,
             resolv_path: None,
             resolv_dest: None,
+            empty_path: PathBuf::from("/tmp/ai-jail-test-empty"),
         }
     }
 }
@@ -395,12 +405,47 @@ pub fn prepare() -> Result<SandboxGuard, String> {
         .map_err(|e| format!("Failed to sync temp hosts file: {e}"))?;
 
     let (resolv_path, resolv_dest) = new_resolv_file();
+    let empty_path = new_empty_file()?;
 
     Ok(SandboxGuard {
         hosts_path: path,
         resolv_path,
         resolv_dest,
+        empty_path,
     })
+}
+
+/// Create a zero-byte tempfile used as the source for --mask
+/// overlays. Same permissions pattern as the hosts file.
+fn new_empty_file() -> Result<PathBuf, String> {
+    let tmp = std::env::temp_dir();
+    for attempt in 0..128_u32 {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let name = format!(
+            "ai-jail-empty.{}.{}.{}",
+            std::process::id(),
+            nonce,
+            attempt
+        );
+        let path = tmp.join(name);
+        match OpenOptions::new().create_new(true).write(true).open(&path) {
+            Ok(_file) => {
+                let _ = std::fs::set_permissions(
+                    &path,
+                    std::fs::Permissions::from_mode(0o400),
+                );
+                return Ok(path);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => {
+                return Err(format!("Failed to create empty tempfile: {e}"));
+            }
+        }
+    }
+    Err("Failed to create empty tempfile after 128 attempts".into())
 }
 
 /// Create a temp copy of /etc/resolv.conf and determine where to
@@ -553,6 +598,10 @@ fn landlock_wrapper_args(config: &Config, verbose: bool) -> Vec<String> {
         args.push("--map".into());
         args.push(path.display().to_string());
     }
+    for path in &config.mask {
+        args.push("--mask".into());
+        args.push(path.display().to_string());
+    }
 
     if verbose {
         args.push("--verbose".into());
@@ -573,6 +622,7 @@ pub fn build(
         project_dir,
         guard.hosts_path(),
         guard.resolv_mount(),
+        guard.empty_path(),
         verbose,
     );
     let lockdown = config.lockdown_enabled();
@@ -642,6 +692,7 @@ pub fn dry_run(
         project_dir,
         guard.hosts_path(),
         guard.resolv_mount(),
+        guard.empty_path(),
         verbose,
     )?;
     Ok(format_dry_run_args(&args))
@@ -652,10 +703,17 @@ fn build_dry_run_args(
     project_dir: &Path,
     hosts_file: &Path,
     resolv_mount: Option<(&Path, &Path)>,
+    empty_path: &Path,
     verbose: bool,
 ) -> Result<Vec<String>, String> {
-    let mount_set =
-        discover_mounts(config, project_dir, hosts_file, resolv_mount, verbose);
+    let mount_set = discover_mounts(
+        config,
+        project_dir,
+        hosts_file,
+        resolv_mount,
+        empty_path,
+        verbose,
+    );
     let lockdown = config.lockdown_enabled();
     let launch = super::build_launch_command(config);
     let mut args: Vec<String> =
@@ -763,6 +821,7 @@ fn discover_mounts(
     project_dir: &Path,
     hosts_file: &Path,
     resolv_mount: Option<(&Path, &Path)>,
+    empty_path: &Path,
     verbose: bool,
 ) -> MountSet {
     let lockdown = config.lockdown_enabled();
@@ -805,6 +864,12 @@ fn discover_mounts(
     } else {
         (vec![], vec![])
     };
+
+    // Mask: replace each path with an empty tempfile (or tmpfs
+    // for directories). Paths are resolved absolutely; relative
+    // paths resolve against project_dir.
+    let mask_mounts =
+        build_mask_mounts(&config.mask, project_dir, empty_path, verbose);
 
     // Pictures: read-only bind of $HOME/Pictures when enabled
     let pictures_mount = if !lockdown && config.pictures_enabled() {
@@ -867,7 +932,53 @@ fn discover_mounts(
             extra_mounts(&config.rw_maps, &config.ro_maps)
         },
         project: project_mount(project_dir, lockdown),
+        mask: mask_mounts,
     }
+}
+
+/// Build bwrap mounts that replace each user-specified path with
+/// an empty file (for regular files) or a tmpfs (for directories).
+/// Relative paths resolve against the project directory so
+/// `--mask .env` just works from the project root.
+fn build_mask_mounts(
+    mask: &[PathBuf],
+    project_dir: &Path,
+    empty_path: &Path,
+    verbose: bool,
+) -> Vec<Mount> {
+    let mut mounts = Vec::new();
+    for p in mask {
+        let target = if p.is_absolute() {
+            p.clone()
+        } else {
+            project_dir.join(p)
+        };
+        if !super::path_exists(&target) {
+            output::warn(&format!(
+                "Mask: {} not found, skipping",
+                target.display()
+            ));
+            continue;
+        }
+        if target.is_dir() {
+            if verbose {
+                output::verbose(&format!("Mask: {} (tmpfs)", target.display()));
+            }
+            mounts.push(Mount::Tmpfs { dest: target });
+        } else {
+            if verbose {
+                output::verbose(&format!(
+                    "Mask: {} (empty file)",
+                    target.display()
+                ));
+            }
+            mounts.push(Mount::FileRoBind {
+                src: empty_path.to_path_buf(),
+                dest: target,
+            });
+        }
+    }
+    mounts
 }
 
 fn discover_base(
@@ -1292,6 +1403,83 @@ mod tests {
     }
 
     #[test]
+    fn build_mask_mounts_file_uses_empty_ro_bind() {
+        use std::io::Write;
+        // Create a temp project dir with a real file to mask
+        let project = std::env::temp_dir()
+            .join(format!("ai-jail-mask-test-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&project);
+        let env_file = project.join(".env");
+        let mut f = std::fs::File::create(&env_file).unwrap();
+        f.write_all(b"SECRET=xyz").unwrap();
+
+        let empty = std::env::temp_dir().join("ai-jail-mask-empty-src");
+        let _ = std::fs::File::create(&empty).unwrap();
+
+        let mounts = build_mask_mounts(
+            &[PathBuf::from(".env")],
+            &project,
+            &empty,
+            false,
+        );
+
+        assert_eq!(mounts.len(), 1);
+        match &mounts[0] {
+            Mount::FileRoBind { src, dest } => {
+                assert_eq!(src, &empty);
+                assert_eq!(dest, &env_file);
+            }
+            _ => panic!("expected FileRoBind for mask on a regular file"),
+        }
+
+        let _ = std::fs::remove_dir_all(&project);
+        let _ = std::fs::remove_file(&empty);
+    }
+
+    #[test]
+    fn build_mask_mounts_directory_uses_tmpfs() {
+        let project = std::env::temp_dir()
+            .join(format!("ai-jail-mask-dir-{}", std::process::id()));
+        let secrets_dir = project.join("secrets");
+        let _ = std::fs::create_dir_all(&secrets_dir);
+        let empty = std::env::temp_dir().join("ai-jail-mask-empty-dir");
+        let _ = std::fs::File::create(&empty).unwrap();
+
+        let mounts = build_mask_mounts(
+            &[PathBuf::from("secrets")],
+            &project,
+            &empty,
+            false,
+        );
+
+        assert_eq!(mounts.len(), 1);
+        match &mounts[0] {
+            Mount::Tmpfs { dest } => assert_eq!(dest, &secrets_dir),
+            _ => panic!("expected Tmpfs for mask on a directory"),
+        }
+
+        let _ = std::fs::remove_dir_all(&project);
+        let _ = std::fs::remove_file(&empty);
+    }
+
+    #[test]
+    fn build_mask_mounts_missing_path_skips() {
+        let project = PathBuf::from("/tmp");
+        let empty = std::env::temp_dir().join("ai-jail-mask-empty-miss");
+        let _ = std::fs::File::create(&empty).unwrap();
+
+        let mounts = build_mask_mounts(
+            &[PathBuf::from("definitely-not-a-real-file-xyz123")],
+            &project,
+            &empty,
+            false,
+        );
+
+        assert!(mounts.is_empty());
+        let _ = std::fs::remove_file(&empty);
+    }
+
+    #[test]
     fn extra_mounts_rw_child_overrides_ro_parent() {
         // Use /usr and /usr/bin which always exist. The order
         // of returned mounts must be: ro first, rw after — so a
@@ -1333,6 +1521,7 @@ mod tests {
             &project,
             guard.hosts_path(),
             guard.resolv_mount(),
+            guard.empty_path(),
             false,
         )
         .unwrap();
@@ -1352,6 +1541,7 @@ mod tests {
             &project,
             guard.hosts_path(),
             guard.resolv_mount(),
+            guard.empty_path(),
             false,
         )
         .unwrap();
@@ -1381,6 +1571,7 @@ mod tests {
             &project,
             guard.hosts_path(),
             guard.resolv_mount(),
+            guard.empty_path(),
             false,
         )
         .unwrap();
@@ -1409,6 +1600,7 @@ mod tests {
             &project,
             guard.hosts_path(),
             guard.resolv_mount(),
+            guard.empty_path(),
             false,
         )
         .unwrap();
@@ -1432,6 +1624,7 @@ mod tests {
             &project,
             guard.hosts_path(),
             guard.resolv_mount(),
+            guard.empty_path(),
             false,
         )
         .unwrap();
@@ -1454,6 +1647,7 @@ mod tests {
             &project,
             guard.hosts_path(),
             guard.resolv_mount(),
+            guard.empty_path(),
             false,
         )
         .unwrap();
@@ -1478,6 +1672,7 @@ mod tests {
             &project,
             guard.hosts_path(),
             guard.resolv_mount(),
+            guard.empty_path(),
             false,
         )
         .unwrap();
@@ -1502,6 +1697,7 @@ mod tests {
             &project,
             guard.hosts_path(),
             guard.resolv_mount(),
+            guard.empty_path(),
             false,
         )
         .unwrap();
@@ -1576,6 +1772,7 @@ mod tests {
             &project,
             guard.hosts_path(),
             guard.resolv_mount(),
+            guard.empty_path(),
             false,
         )
         .unwrap();
@@ -1597,6 +1794,7 @@ mod tests {
             &project,
             guard.hosts_path(),
             guard.resolv_mount(),
+            guard.empty_path(),
             false,
         )
         .unwrap();
@@ -1636,6 +1834,7 @@ mod tests {
             &project,
             guard.hosts_path(),
             guard.resolv_mount(),
+            guard.empty_path(),
             false,
         )
         .unwrap();

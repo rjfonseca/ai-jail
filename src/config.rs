@@ -18,6 +18,8 @@ pub struct Config {
     #[serde(default)]
     pub hide_dotdirs: Vec<String>,
     #[serde(default)]
+    pub mask: Vec<PathBuf>,
+    #[serde(default)]
     pub no_gpu: Option<bool>,
     #[serde(default)]
     pub no_docker: Option<bool>,
@@ -161,6 +163,8 @@ pub fn merge_with_global(global: Config, local: Config) -> Config {
     dedup_paths(&mut c.ro_maps);
     c.hide_dotdirs.extend(local.hide_dotdirs);
     dedup_strings(&mut c.hide_dotdirs);
+    c.mask.extend(local.mask);
+    dedup_paths(&mut c.mask);
     if local.no_gpu.is_some() {
         c.no_gpu = local.no_gpu;
     }
@@ -342,6 +346,9 @@ pub fn merge(cli: &CliArgs, existing: Config) -> Config {
     config.hide_dotdirs.extend(cli.hide_dotdirs.iter().cloned());
     dedup_strings(&mut config.hide_dotdirs);
 
+    config.mask.extend(cli.mask.iter().cloned());
+    dedup_paths(&mut config.mask);
+
     // Boolean flags: CLI overrides config (--no-gpu => no_gpu=Some(true), --gpu => no_gpu=Some(false))
     if let Some(v) = cli.gpu {
         config.no_gpu = Some(!v);
@@ -433,6 +440,17 @@ pub fn display_status(config: &Config) {
         output::status_header(
             "  Hide dotdirs",
             &config.hide_dotdirs.join(", "),
+        );
+    }
+    if !config.mask.is_empty() {
+        output::status_header(
+            "  Masked files",
+            &config
+                .mask
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", "),
         );
     }
 
@@ -765,6 +783,7 @@ no_rlimits = false
             rw_maps: vec![PathBuf::from("/tmp/a"), PathBuf::from("/tmp/b")],
             ro_maps: vec![PathBuf::from("/opt/data")],
             hide_dotdirs: vec![".my_secrets".into(), ".proton".into()],
+            mask: vec![PathBuf::from(".env")],
             no_gpu: Some(true),
             no_docker: None,
             no_display: Some(false),
@@ -1483,6 +1502,7 @@ allow_tcp_ports = [32000, 8080]
             rw_maps: vec![PathBuf::from("/tmp/shared")],
             ro_maps: vec![],
             hide_dotdirs: vec![],
+            mask: vec![],
             no_gpu: Some(true),
             no_docker: None,
             no_display: None,

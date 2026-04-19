@@ -517,36 +517,18 @@ fn ends_at_ground_state(data: &[u8]) -> bool {
     // 0 = ground, 1 = ESC, 2 = CSI params, 3 = string (OSC/DCS)
     let mut st: u8 = 0;
     for &b in data {
-        st = match st {
-            0 => {
-                if b == 0x1b {
-                    1
-                } else {
-                    0
-                }
-            }
-            1 => match b {
-                b'[' => 2,
-                b']' | b'P' | b'X' | b'^' | b'_' => 3,
-                0x20..=0x2f => 1, // intermediates
-                _ => 0,           // single-char escape done
-            },
-            2 => {
-                if (0x40..=0x7e).contains(&b) {
-                    0 // CSI final byte
-                } else {
-                    2 // params / intermediates
-                }
-            }
-            3 => {
-                if b == 0x07 {
-                    0 // BEL terminates OSC
-                } else if b == 0x1b {
-                    1 // possible ST (ESC \)
-                } else {
-                    3
-                }
-            }
+        st = match (st, b) {
+            (0, 0x1b) => 1,
+            (0, _) => 0,
+            (1, b'[') => 2,
+            (1, b']' | b'P' | b'X' | b'^' | b'_') => 3,
+            (1, 0x20..=0x2f) => 1, // intermediates
+            (1, _) => 0,           // single-char escape done
+            (2, 0x40..=0x7e) => 0, // CSI final byte
+            (2, _) => 2,           // params / intermediates
+            (3, 0x07) => 0,        // BEL terminates OSC
+            (3, 0x1b) => 1,        // possible ST (ESC \)
+            (3, _) => 3,
             _ => 0,
         };
     }

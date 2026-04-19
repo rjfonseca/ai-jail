@@ -17,6 +17,7 @@ OPTIONS:
     --rw-map <PATH>                Mount PATH read-write inside sandbox (repeatable)
     --map <PATH>                   Mount PATH read-only inside sandbox (repeatable)
     --hide-dotdir <NAME>           Never mount dotdir NAME (e.g., .my_secrets) (repeatable)
+    --mask <PATH>                  Replace PATH with an empty file inside sandbox (repeatable)
     --lockdown / --no-lockdown     Enable/disable strict read-only lockdown mode
     --landlock / --no-landlock     Enable/disable Landlock LSM (Linux 5.13+, default: on)
     --seccomp / --no-seccomp       Enable/disable seccomp syscall filter (Linux, default: on)
@@ -25,7 +26,7 @@ OPTIONS:
     --no-docker / --docker         Disable/enable Docker socket passthrough
     --no-display / --display       Disable/enable X11/Wayland passthrough (Linux only)
     --no-mise / --mise             Disable/enable mise integration
-    --ssh / --no-ssh                Share ~/.ssh read-only (default: off)
+    --ssh / --no-ssh               Share ~/.ssh read-only + forward SSH_AUTH_SOCK (default: off)
     --pictures / --no-pictures     Share ~/Pictures read-only (default: off)
     --save-config / --no-save-config
                                    Enable/disable automatic .ai-jail writes
@@ -49,6 +50,7 @@ pub struct CliArgs {
     pub rw_maps: Vec<PathBuf>,
     pub ro_maps: Vec<PathBuf>,
     pub hide_dotdirs: Vec<String>,
+    pub mask: Vec<PathBuf>,
     pub lockdown: Option<bool>,
     pub landlock: Option<bool>,
     pub seccomp: Option<bool>,
@@ -95,6 +97,14 @@ pub fn parse_from(mut parser: lexopt::Parser) -> Result<CliArgs, String> {
                 let val: PathBuf =
                     parser.value().map_err(|e| e.to_string())?.into();
                 args.ro_maps.push(val);
+            }
+            Long("mask") => {
+                let val = parser.value().map_err(|e| e.to_string())?;
+                let s = val.to_string_lossy();
+                if s.is_empty() {
+                    return Err("--mask requires a non-empty path".into());
+                }
+                args.mask.push(PathBuf::from(s.into_owned()));
             }
             Long("hide-dotdir") => {
                 let val = parser.value().map_err(|e| e.to_string())?;
@@ -395,6 +405,35 @@ mod tests {
     }
 
     // ── Map flags ──────────────────────────────────────────────
+
+    #[test]
+    fn parse_mask_single() {
+        let args = parse_test(&["--mask", ".env", "bash"]).unwrap();
+        assert_eq!(args.mask, vec![PathBuf::from(".env")]);
+    }
+
+    #[test]
+    fn parse_mask_multiple() {
+        let args =
+            parse_test(&["--mask", ".env", "--mask", ".env.local", "bash"])
+                .unwrap();
+        assert_eq!(
+            args.mask,
+            vec![PathBuf::from(".env"), PathBuf::from(".env.local")]
+        );
+    }
+
+    #[test]
+    fn parse_mask_empty_errors() {
+        let result = parse_test(&["--mask", "", "bash"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_mask_missing_value_errors() {
+        let result = parse_test(&["--mask"]);
+        assert!(result.is_err());
+    }
 
     #[test]
     fn parse_rw_map() {
