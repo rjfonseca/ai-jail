@@ -11,3 +11,6 @@ rw_maps = [
     "/home/akitaonrails/Projects/ai-jail",
 ]
 ro_maps = []
+hide_dotdirs = []
+mask = []
+allow_tcp_ports = []
