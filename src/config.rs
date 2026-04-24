@@ -335,6 +335,35 @@ fn dedup_strings(strings: &mut Vec<String>) {
     strings.retain(|s| seen.insert(s.clone()));
 }
 
+/// Expand a leading `~` or `~/` in a path using `$HOME`.
+/// Returns the path unchanged if `$HOME` is unset or the path
+/// does not start with `~`. Only leading-tilde forms are
+/// rewritten; `~user` (other-user home) is left alone.
+pub fn expand_tilde(path: PathBuf) -> PathBuf {
+    let s = match path.to_str() {
+        Some(s) => s,
+        None => return path,
+    };
+    if s == "~" {
+        if let Ok(home) = std::env::var("HOME") {
+            return PathBuf::from(home);
+        }
+        return path;
+    }
+    if let Some(rest) = s.strip_prefix("~/")
+        && let Ok(home) = std::env::var("HOME")
+    {
+        return PathBuf::from(home).join(rest);
+    }
+    path
+}
+
+fn expand_tilde_vec(paths: &mut [PathBuf]) {
+    for p in paths.iter_mut() {
+        *p = expand_tilde(std::mem::take(p));
+    }
+}
+
 pub fn merge(cli: &CliArgs, existing: Config) -> Config {
     let mut config = existing;
 
@@ -406,6 +435,14 @@ pub fn merge(cli: &CliArgs, existing: Config) -> Config {
         .extend(cli.allow_tcp_ports.iter().copied());
     config.allow_tcp_ports.sort_unstable();
     config.allow_tcp_ports.dedup();
+
+    // Expand ~ / ~/ in all user-provided path fields. Config
+    // files are TOML (no shell expansion); CLI args are shell-
+    // expanded already but harmless to re-run. Only leading
+    // tilde is recognized; `~user` is left alone.
+    expand_tilde_vec(&mut config.rw_maps);
+    expand_tilde_vec(&mut config.ro_maps);
+    expand_tilde_vec(&mut config.mask);
 
     config
 }
@@ -1662,5 +1699,97 @@ allow_tcp_ports = [32000, 8080]
         let _ = std::fs::remove_file(dir.join(".ai-jail"));
         let _ = std::fs::remove_file(&victim);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── Tilde expansion tests ─────────────────────────────────
+
+    #[test]
+    fn expand_tilde_with_slash() {
+        let _env = ENV_LOCK.lock().unwrap();
+        let saved = std::env::var_os("HOME");
+        unsafe { std::env::set_var("HOME", "/home/example") };
+        let out = expand_tilde(PathBuf::from("~/projects/x"));
+        assert_eq!(out, PathBuf::from("/home/example/projects/x"));
+        unsafe {
+            std::env::remove_var("HOME");
+            if let Some(v) = saved {
+                std::env::set_var("HOME", v);
+            }
+        }
+    }
+
+    #[test]
+    fn expand_tilde_bare() {
+        let _env = ENV_LOCK.lock().unwrap();
+        let saved = std::env::var_os("HOME");
+        unsafe { std::env::set_var("HOME", "/home/bare") };
+        assert_eq!(
+            expand_tilde(PathBuf::from("~")),
+            PathBuf::from("/home/bare")
+        );
+        unsafe {
+            std::env::remove_var("HOME");
+            if let Some(v) = saved {
+                std::env::set_var("HOME", v);
+            }
+        }
+    }
+
+    #[test]
+    fn expand_tilde_leaves_other_user_home_alone() {
+        let _env = ENV_LOCK.lock().unwrap();
+        let saved = std::env::var_os("HOME");
+        unsafe { std::env::set_var("HOME", "/home/me") };
+        // ~otheruser should not be rewritten
+        let p = PathBuf::from("~otheruser/file");
+        assert_eq!(expand_tilde(p.clone()), p);
+        unsafe {
+            std::env::remove_var("HOME");
+            if let Some(v) = saved {
+                std::env::set_var("HOME", v);
+            }
+        }
+    }
+
+    #[test]
+    fn expand_tilde_passes_through_absolute_paths() {
+        let _env = ENV_LOCK.lock().unwrap();
+        let p = PathBuf::from("/tmp/abs");
+        assert_eq!(expand_tilde(p.clone()), p);
+    }
+
+    #[test]
+    fn merge_expands_tilde_in_ro_and_rw_maps_and_mask() {
+        let _env = ENV_LOCK.lock().unwrap();
+        let saved = std::env::var_os("HOME");
+        unsafe { std::env::set_var("HOME", "/home/user") };
+
+        let existing = Config {
+            ro_maps: vec![
+                PathBuf::from("~/.bashrc"),
+                PathBuf::from("/absolute/path"),
+            ],
+            rw_maps: vec![PathBuf::from("~/work")],
+            mask: vec![PathBuf::from("~/secret.env")],
+            ..Config::default()
+        };
+        let merged = merge(&CliArgs::default(), existing);
+
+        assert_eq!(
+            merged.ro_maps,
+            vec![
+                PathBuf::from("/home/user/.bashrc"),
+                PathBuf::from("/absolute/path"),
+            ]
+        );
+        assert_eq!(merged.rw_maps, vec![PathBuf::from("/home/user/work")]);
+        assert_eq!(merged.mask, vec![PathBuf::from("/home/user/secret.env")]);
+
+        unsafe {
+            std::env::remove_var("HOME");
+            if let Some(v) = saved {
+                std::env::set_var("HOME", v);
+            }
+        }
     }
 }

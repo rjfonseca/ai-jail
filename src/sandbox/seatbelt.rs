@@ -594,8 +594,16 @@ mod tests {
             ..Config::default()
         };
         let paths = macos_writable_paths(&fixture.project_dir, &config, false);
-        assert!(paths.iter().any(|path| path == &fixture.git_dir));
-        assert!(paths.iter().any(|path| path == &fixture.common_dir));
+        // Compare via canonicalize: on macOS the fixture path contains
+        // `..` segments (e.g. project_dir/../common/.git/worktrees/...)
+        // because validate_linked_git_worktree resolves the gitdir
+        // relative to the project dir without collapsing. Raw PathBuf
+        // equality fails even though the paths refer to the same dir.
+        let same = |a: &Path, b: &Path| {
+            std::fs::canonicalize(a).ok() == std::fs::canonicalize(b).ok()
+        };
+        assert!(paths.iter().any(|path| same(path, &fixture.git_dir)));
+        assert!(paths.iter().any(|path| same(path, &fixture.common_dir)));
     }
 
     #[test]

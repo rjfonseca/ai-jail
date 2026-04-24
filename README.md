@@ -63,6 +63,34 @@ cp target/release/ai-jail ~/.local/bin/
   - The Nix flake package already sets `BWRAP_BIN` automatically.
 - macOS: `/usr/bin/sandbox-exec` is used (legacy/deprecated Apple interface).
 
+#### Ubuntu 24.04+ / Debian 13+ users
+
+These distros ship an AppArmor policy that denies unprivileged user namespace creation, which is how `bwrap` isolates the sandbox. If `ai-jail` fails with `bwrap: setting up uid map: Permission denied`, you need to either relax the system-wide restriction or install a local AppArmor profile for `bwrap`. This affects every tool that uses rootless user namespaces (Distrobox, rootless Podman, Flatpak from non-standard paths, etc.), not just ai-jail.
+
+Option A — relax the restriction system-wide (simplest):
+
+```bash
+echo 'kernel.apparmor_restrict_unprivileged_userns=0' \
+  | sudo tee /etc/sysctl.d/60-userns.conf
+sudo sysctl --system
+```
+
+Option B — install an unconfined profile for `bwrap` only (keeps the rest of the policy intact):
+
+```bash
+sudo tee /etc/apparmor.d/bwrap >/dev/null <<'EOF'
+abi <abi/4.0>,
+include <tunables/global>
+profile bwrap /usr/bin/bwrap flags=(unconfined) {
+  userns,
+  include if exists <local/bwrap>
+}
+EOF
+sudo systemctl reload apparmor
+```
+
+Pick whichever matches your threat model. We don't ship a profile with ai-jail itself because the profile has to apply to `bwrap`, which is system-owned.
+
 ## Quick Start
 
 ```bash
@@ -364,7 +392,7 @@ lockdown = true
 When CLI flags and an existing config are both present:
 
 - `command`: CLI replaces config for the current run, but a CLI-passed command is **not** auto-persisted when the project already has a stored command — so `ai-jail codex` after `ai-jail claude` runs codex for that session without rewriting `.ai-jail`'s stored default. Use `ai-jail --init <command>` to explicitly change the stored command. First-run bootstrap (no stored command yet) still persists the CLI command as the new default.
-- `rw_maps` / `ro_maps`: CLI values are appended (duplicates removed)
+- `rw_maps` / `ro_maps` / `mask`: CLI values are appended (duplicates removed). Paths starting with `~/` or exactly `~` are expanded against `$HOME` at merge time, so you can write `ro_maps = ["~/.bashrc"]` in a config file.
 - Boolean flags: CLI overrides config (`--no-gpu` sets `no_gpu = true`)
 - `--save-config` / `--no-save-config` override `no_save_config`
 - Config is updated after merge in normal mode when config saving is enabled; lockdown skips auto-save
